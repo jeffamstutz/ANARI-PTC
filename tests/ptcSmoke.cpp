@@ -49,6 +49,8 @@ struct Options
 const float3 kColors[] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 1, 0}};
 const uint2 kImageSize(128, 64);
 const float kCameraHeight = 1.5f;
+const float kAspect = float(kImageSize.x) / kImageSize.y;
+const int kNumColors = int(sizeof(kColors) / sizeof(kColors[0]));
 
 void statusFunc(const void *,
     ANARIDevice,
@@ -66,7 +68,12 @@ bool parseArgs(int argc, char **argv, Options &opts)
 {
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
-    if (arg == "--color" && i + 1 < argc) {
+    const bool hasValue = i + 1 < argc;
+    if ((arg == "--color" || arg == "--expect-library") && !hasValue) {
+      fprintf(stderr, "missing value for '%s'\n", arg.c_str());
+      return false;
+    }
+    if (arg == "--color") {
       const std::string type = argv[++i];
       if (type == "ufixed8")
         opts.colorType = ANARI_UFIXED8_RGBA_SRGB;
@@ -82,7 +89,7 @@ bool parseArgs(int argc, char **argv, Options &opts)
       opts.requireMpiExtension = true;
     else if (arg == "--invert-check")
       opts.invertCheck = true;
-    else if (arg == "--expect-library" && i + 1 < argc)
+    else if (arg == "--expect-library")
       opts.expectLibrary = argv[++i];
     else {
       fprintf(stderr, "unknown argument '%s'\n", arg.c_str());
@@ -101,8 +108,7 @@ float sphereX(int r, int size)
 // pixel column of a world-space x under the orthographic camera
 int pixelX(float x)
 {
-  const float aspect = float(kImageSize.x) / kImageSize.y;
-  return int((x / (kCameraHeight * aspect) + 0.5f) * kImageSize.x);
+  return int((x / (kCameraHeight * kAspect) + 0.5f) * kImageSize.x);
 }
 
 std::string canonicalPath(const std::string &path)
@@ -148,7 +154,7 @@ bool deviceHasMpiExtension(anari::Device d)
 anari::World buildWorld(anari::Device d, int rank, int size)
 {
   float3 pos(sphereX(rank, size), 0.f, 0.f);
-  float3 col = kColors[rank % 4];
+  float3 col = kColors[rank % kNumColors];
   auto geom = anari::newObject<anari::Geometry>(d, "sphere");
   anari::setParameterArray1D(d, geom, "vertex.position", &pos, 1);
   anari::setParameter(d, geom, "radius", 0.3f);
@@ -179,8 +185,7 @@ anari::Frame buildFrame(anari::Device d, const Options &opts, anari::World w)
   anari::setParameter(d, cam, "direction", float3(0, 0, -1));
   anari::setParameter(d, cam, "up", float3(0, 1, 0));
   anari::setParameter(d, cam, "height", kCameraHeight);
-  anari::setParameter(
-      d, cam, "aspect", float(kImageSize.x) / kImageSize.y);
+  anari::setParameter(d, cam, "aspect", kAspect);
   anari::commitParameters(d, cam);
 
   auto ren = anari::newObject<anari::Renderer>(d, "default");
@@ -226,7 +231,7 @@ int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int siz
         for (int i = 0; i < 4; i++)
           c[i] = ((v >> (8 * i)) & 0xff) / 255.f;
       }
-      float3 want = kColors[r % 4];
+      float3 want = kColors[r % kNumColors];
       if (opts.invertCheck)
         want = float3(1.f) - want;
       bool ok = c[3] > 0.9f;

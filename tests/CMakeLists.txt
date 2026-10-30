@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 ## MPI smoke test for the ptc device (wrapping helide) ##
 #
 # Each test runs ptcSmoke under mpiexec. Every rank renders one sphere through
@@ -9,6 +11,8 @@ if (NOT MPIEXEC_EXECUTABLE)
   message(WARNING "#ptc: mpiexec not found, skipping tests")
   return()
 endif()
+
+include(GNUInstallDirs)
 
 # helide is not an exported CMake target; look for it next to the anari
 # install that find_package(anari) found.
@@ -44,11 +48,11 @@ endfunction()
 # The freshly built ptc must come first on the search path: an installed
 # libanari_library_ptc.so may sit next to helide. ptcSmoke also checks which
 # ptc library it actually loaded (--expect-library).
-function(ptc_set_test_environment test)
+function(ptc_set_test_environment test ranks)
   set(libdirs "$<TARGET_FILE_DIR:anari_library_ptc>" "${PTC_HELIDE_DIR}")
   set_tests_properties(${test} PROPERTIES
     TIMEOUT 120
-    PROCESSORS 3
+    PROCESSORS ${ranks}
     ENVIRONMENT "PTC_ANARI_LIBRARY=helide")
   if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
     # each prepend goes in front of the previous one, so add in reverse
@@ -59,9 +63,13 @@ function(ptc_set_test_environment test)
     endforeach()
     set_tests_properties(${test} PROPERTIES ENVIRONMENT_MODIFICATION "${mods}")
   else()
+    # Note: this captures LD_LIBRARY_PATH at configure time.
     string(REPLACE ";" ":" path "${libdirs}")
+    if (DEFINED ENV{LD_LIBRARY_PATH} AND NOT "$ENV{LD_LIBRARY_PATH}" STREQUAL "")
+      string(APPEND path ":$ENV{LD_LIBRARY_PATH}")
+    endif()
     set_property(TEST ${test} APPEND PROPERTY ENVIRONMENT
-      "LD_LIBRARY_PATH=${path}:$ENV{LD_LIBRARY_PATH}")
+      "LD_LIBRARY_PATH=${path}")
   endif()
 endfunction()
 
@@ -70,19 +78,24 @@ foreach(color ${PTC_TEST_COLORS})
     set(test ptc_smoke_${color}_${ranks}ranks)
     ptc_smoke_command(cmd ${ranks} --color ${color})
     add_test(NAME ${test} COMMAND ${cmd})
-    ptc_set_test_environment(${test})
-    # The CPU compositor does not support FLOAT32_VEC4 yet (ticket 08).
+    ptc_set_test_environment(${test} ${ranks})
+    # Expected failure: the CPU compositor does not support FLOAT32_VEC4 yet
+    # (ticket 08). Only that specific error counts as a pass, so unrelated
+    # failures still show up.
     if (NOT USE_CUDA AND color STREQUAL "float32")
-      set_tests_properties(${test} PROPERTIES WILL_FAIL TRUE)
+      set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION
+        "support for FLOAT32_VEC4 color channel not implemented")
     endif()
   endforeach()
 endforeach()
 
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.
-set(test ptc_smoke_detects_failure_2ranks)
-ptc_smoke_command(cmd 2 --invert-check)
+set(ranks 2)
+set(test ptc_smoke_detects_failure_${ranks}ranks)
+ptc_smoke_command(cmd ${ranks} --invert-check)
+string(REPLACE ";" "$<SEMICOLON>" cmd "${cmd}")
 add_test(NAME ${test}
-  COMMAND ${CMAKE_COMMAND} -DRANKS=2 "-DCOMMAND=${cmd}"
+  COMMAND ${CMAKE_COMMAND} -DRANKS=${ranks} -DCOMMAND=${cmd}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/ExpectFailure.cmake)
-ptc_set_test_environment(${test})
+ptc_set_test_environment(${test} ${ranks})

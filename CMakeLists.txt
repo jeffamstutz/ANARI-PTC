@@ -87,7 +87,6 @@ endif()
 add_subdirectory(ptc)
 
 if (PTC_BUILD_TESTING)
-  include(GNUInstallDirs)
   enable_testing()
   add_subdirectory(tests)
 endif()

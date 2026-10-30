@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 # Runs COMMAND (a list) and passes only if it exits non-zero and each of the
 # RANKS ranks reported that it is exiting with a failure.
 
