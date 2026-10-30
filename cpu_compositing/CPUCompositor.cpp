@@ -122,8 +122,9 @@ namespace ptc {
 
   CPUCompositor::~CPUCompositor()
   {
-    // returns false (without waiting) if other handles are still active;
-    // the last compositor to go away then does the waiting
+    // best effort: returns false without waiting if anything else (another
+    // compositor, or other TBB users in the process) still holds the
+    // scheduler; in that case whoever releases it last has to wait
     tbb::finalize(tbbHandle, std::nothrow);
   }
 

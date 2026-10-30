@@ -15,7 +15,8 @@
 # ======================================================================== #
 
 # ------------------------------------------------------------------
-find_package(TBB REQUIRED)
+# 2021.6: non-preview task_scheduler_handle / tbb::finalize
+find_package(TBB 2021.6 REQUIRED)
 # ------------------------------------------------------------------
 
 add_library(cpu_compositing STATIC
