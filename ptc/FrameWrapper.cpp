@@ -59,15 +59,21 @@ ANARIFrame FrameWrapper::handle() const
 void FrameWrapper::setParameter(
     const char *_name, ANARIDataType type, const void *mem)
 {
+  // A value of the wrong type reads as unset, as it does for the wrapped
+  // frame (helium's getParam).
   std::string_view name = _name;
-  if (type == ANARI_UINT32_VEC2 && name == "size")
-    m_newSize = bit_cast<anari::math::uint2>(type, mem);
-  else if (type == ANARI_DATA_TYPE && name == "channel.color") {
-    m_newColorType = bit_cast<ANARIDataType>(type, mem);
+  if (name == "size") {
+    m_pending.size = type == ANARI_UINT32_VEC2
+        ? bit_cast<anari::math::uint2>(type, mem)
+        : TrackedParameters{}.size;
+  } else if (name == "channel.color") {
+    m_pending.colorType = type == ANARI_DATA_TYPE
+        ? bit_cast<ANARIDataType>(type, mem)
+        : TrackedParameters{}.colorType;
   } else if (name == "channel.depth") {
     // Never forwarded: the wrapped frame keeps rendering FLOAT32 depth for
     // compositing. Only FLOAT32 is a valid depth type (as in helide).
-    m_newDepthEnabled = type == ANARI_DATA_TYPE
+    m_pending.depthEnabled = type == ANARI_DATA_TYPE
         && bit_cast<ANARIDataType>(type, mem) == ANARI_FLOAT32;
     return;
   }
@@ -77,8 +83,13 @@ void FrameWrapper::setParameter(
 
 void FrameWrapper::unsetParameter(const char *_name)
 {
-  if (std::string_view(_name) == "channel.depth") {
-    m_newDepthEnabled = false; // see setParameter()
+  std::string_view name = _name;
+  if (name == "size")
+    m_pending.size = TrackedParameters{}.size;
+  else if (name == "channel.color")
+    m_pending.colorType = TrackedParameters{}.colorType;
+  else if (name == "channel.depth") {
+    m_pending.depthEnabled = false; // see setParameter()
     return;
   }
   anariUnsetParameter(m_device, m_frame, _name);
@@ -86,7 +97,7 @@ void FrameWrapper::unsetParameter(const char *_name)
 
 void FrameWrapper::unsetAllParameters()
 {
-  m_newDepthEnabled = false;
+  m_pending = {};
   anariUnsetAllParameters(m_device, m_frame);
   anari::setParameter(m_device, m_frame, "channel.depth", ANARI_FLOAT32);
 }
@@ -139,7 +150,7 @@ void FrameWrapper::unmapParameterArray(const char *name)
 
 void FrameWrapper::commitParameters()
 {
-  m_depthEnabled = m_newDepthEnabled;
+  m_committed = m_pending;
   anariCommitParameters(m_device, m_frame);
 }
 
@@ -167,21 +178,29 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
     uint32_t *height,
     ANARIDataType *pixelType)
 {
-  *width = m_currentSize.x;
-  *height = m_currentSize.y;
+  // Report the buffers as of the last render: that is what they hold.
+  *width = m_bufferSize.x;
+  *height = m_bufferSize.y;
 
   std::string_view channel = _channel;
 
   if (channel == "channel.color") {
-    *pixelType = m_currentColorType;
-    return m_color;
+    if (m_bufferColorType != ANARI_UNKNOWN && m_color) {
+      *pixelType = m_bufferColorType;
+      return m_color;
+    }
+    m_reportStatus(ANARI_SEVERITY_WARNING,
+        m_bufferColorType != ANARI_UNKNOWN
+            ? "cannot map 'channel.color': the frame has not been rendered"
+            : "cannot map 'channel.color': the frame was rendered without "
+              "a 'channel.color' parameter");
   } else if (channel == "channel.depth") {
-    if (m_depthEnabled && m_depth) {
+    if (m_committed.depthEnabled && m_depth) {
       *pixelType = ANARI_FLOAT32;
       return m_depth;
     }
     m_reportStatus(ANARI_SEVERITY_WARNING,
-        m_depthEnabled
+        m_committed.depthEnabled
             ? "cannot map 'channel.depth': the frame has not been rendered"
             : "cannot map 'channel.depth': the frame's 'channel.depth' "
               "parameter is not set to ANARI_FLOAT32");
@@ -209,40 +228,39 @@ void FrameWrapper::discardFrame()
   anariDiscardFrame(m_device, m_frame);
 }
 
-void FrameWrapper::updateSize()
+void FrameWrapper::updateBuffers()
 {
-  if (m_newSize == m_currentSize && m_newColorType == m_currentColorType)
+  const auto size = m_committed.size;
+  const auto colorType = m_committed.colorType;
+  if (size == m_bufferSize && colorType == m_bufferColorType)
     return;
 
   cleanup();
+  free(m_color);
+  free(m_depth);
+  m_color = nullptr;
+  m_depth = nullptr;
 
-  m_currentSize = m_newSize;
-  m_currentColorType = m_newColorType;
+  m_bufferSize = size;
+  m_bufferColorType = colorType;
 
-  if (m_currentSize.x * m_currentSize.y == 0)
+  if (size.x == 0 || size.y == 0)
     return;
 
-  if (m_currentColorType == ANARI_UNKNOWN)
-    return;
-
-  const auto &size = m_currentSize;
-
-  if (m_color) free(m_color); m_color = nullptr;
-  if (m_depth) free(m_depth); m_depth = nullptr;
-  size_t pixelSize 
-    = (m_currentColorType == ANARI_FLOAT32_VEC4)
-    ? (4*sizeof(float))
-    : sizeof(uint32_t);
-  m_color = malloc(size.x * size.y * pixelSize);
-  m_depth = (float*)malloc(size.x * size.y * sizeof(float));
+  const size_t numPixels = size_t(size.x) * size.y;
+  m_color = malloc(numPixels * colorPixelSize(colorType));
+  m_depth = (float *)malloc(numPixels * sizeof(float));
+  allocate();
 }
 
 void FrameWrapper::renderFrame()
 {
-  updateSize();
+  updateBuffers();
   anariRenderFrame(m_device, m_frame);
   anariFrameReady(m_device, m_frame, ANARI_WAIT);
-  composite();
+  // Every rank sees the same commits, so all of them skip or composite.
+  if (m_bufferSize.x != 0 && m_bufferSize.y != 0)
+    composite();
 }
 
 } // namespace ptc

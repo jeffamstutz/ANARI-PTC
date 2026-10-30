@@ -91,55 +91,48 @@ namespace ptc {
     CUDAFrameWrapper::cleanup();
   }
   
-  void CUDAFrameWrapper::updateSize()
+  void CUDAFrameWrapper::allocate()
   {
-    if (m_newSize == m_currentSize && m_newColorType == m_currentColorType)
-      return;
-    FrameWrapper::updateSize();
+    const auto &size = m_bufferSize;
+    const size_t numPixels = size_t(size.x) * size.y;
 
-    if (m_currentSize.x * m_currentSize.y == 0)
-      return;
-
-    if (m_currentColorType == ANARI_UNKNOWN)
-      return;
-    
-    const auto &size = m_currentSize;
-    
     m_deepComp.resize(size.x, size.y);
 
-    size_t colorSize
-      = (m_currentColorType == ANARI_FLOAT32_VEC4)
-      ? sizeof(float4)
-      : sizeof(uint32_t);
-    cudaMalloc((void **)&d_color_in,  size.x * size.y * colorSize);
-    cudaMalloc((void **)&d_color_out, size.x * size.y * colorSize);
-    cudaMalloc((void **)&d_depth, size.x * size.y * sizeof(*d_depth));
-    cudaMalloc((void **)&d_depth_out, size.x * size.y * sizeof(*d_depth_out));
+    const size_t colorSize = colorPixelSize(m_bufferColorType);
+    cudaMalloc((void **)&d_color_in,  numPixels * colorSize);
+    cudaMalloc((void **)&d_color_out, numPixels * colorSize);
+    cudaMalloc((void **)&d_depth, numPixels * sizeof(*d_depth));
+    cudaMalloc((void **)&d_depth_out, numPixels * sizeof(*d_depth_out));
+    // without channel.color, composite transparent black so depth still
+    // composites; composite() never overwrites it
+    if (m_bufferColorType == ANARI_UNKNOWN)
+      cudaMemset(d_color_in, 0, numPixels * colorSize);
     CUDA_SYNC_CHECK();
   }
 
   void CUDAFrameWrapper::composite()
   {
-    dc::DeviceInterface dcDev = m_deepComp.prepare();
+    const bool hasColor = m_bufferColorType != ANARI_UNKNOWN;
+    const auto &size = m_bufferSize;
+    const size_t numPixels = size_t(size.x) * size.y;
+    const size_t colorSize = colorPixelSize(m_bufferColorType);
 
-    anari::math::uint2 size;
+    anari::math::uint2 mappedSize;
     ANARIDataType ptType = ANARI_UNKNOWN;
     const float *depth
       = (const float *)anariMapFrame(m_device, m_frame, "channel.depth",
-                                     &size.x, &size.y, &ptType);
-    const void *color
-      = (const void *)anariMapFrame(m_device, m_frame, "channel.color",
-                                    &size.x, &size.y, &ptType);
-    size_t colorSize
-      = (m_currentColorType == ANARI_FLOAT32_VEC4)
-      ? sizeof(float4)
-      : sizeof(uint32_t);
+                                     &mappedSize.x, &mappedSize.y, &ptType);
     cudaMemcpy
-      (d_depth, depth, size.x * size.y * sizeof(float),
+      (d_depth, depth, numPixels * sizeof(float),
        cudaMemcpyDefault);
-    cudaMemcpy
-      (d_color_in, color, size.x * size.y * colorSize,
-       cudaMemcpyDefault);
+    if (hasColor) {
+      const void *color
+        = (const void *)anariMapFrame(m_device, m_frame, "channel.color",
+                                      &mappedSize.x, &mappedSize.y, &ptType);
+      cudaMemcpy
+        (d_color_in, color, numPixels * colorSize,
+         cudaMemcpyDefault);
+    }
     
     auto ngx = dc::divRoundUp(size.x, 16);
     auto ngy = dc::divRoundUp(size.y, 16);
@@ -150,24 +143,25 @@ namespace ptc {
        size.y,
        d_depth,
        d_color_in,
-       m_currentColorType);
-    bool useFloat4 = (m_currentColorType == ANARI_FLOAT32_VEC4);
+       m_bufferColorType);
+    bool useFloat4 = (m_bufferColorType == ANARI_FLOAT32_VEC4);
     m_deepComp.finish(m_rank == 0 ? d_color_out : nullptr,
                       m_rank == 0 ? d_depth_out : nullptr,
                       useFloat4);
     cudaMemcpy(m_color, 
                d_color_out,
-               size.x * size.y * colorSize,
+               numPixels * colorSize,
                cudaMemcpyDefault);
     cudaMemcpy(m_depth,
                d_depth_out,
-               size.x * size.y * sizeof(float),
+               numPixels * sizeof(float),
                cudaMemcpyDefault);
 
     CUDA_SYNC_CHECK();
 
     anariUnmapFrame(m_device, m_frame, "channel.depth");
-    anariUnmapFrame(m_device, m_frame, "channel.color");
+    if (hasColor)
+      anariUnmapFrame(m_device, m_frame, "channel.color");
   }
 
   void CUDAFrameWrapper::cleanup()

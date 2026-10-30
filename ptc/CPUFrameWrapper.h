@@ -32,11 +32,13 @@ namespace ptc {
     virtual ~CPUFrameWrapper();
     
     // void renderFrame() override;
-    void updateSize() override;
+    void allocate() override;
     void composite() override;
     void cleanup() override;
     
     CPUCompositor compositor;
+    /*! compositor color input when the frame has no channel.color */
+    std::vector<uint32_t> m_noColor;
   };
 
 }

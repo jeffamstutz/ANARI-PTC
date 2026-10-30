@@ -32,7 +32,7 @@ namespace ptc {
     virtual ~CUDAFrameWrapper();
     
     // void renderFrame() override;
-    void updateSize() override;
+    void allocate() override;
     void composite() override;
     void cleanup() override;
     

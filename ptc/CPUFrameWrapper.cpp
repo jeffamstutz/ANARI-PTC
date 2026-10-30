@@ -43,46 +43,42 @@ namespace ptc {
     CPUFrameWrapper::cleanup();
   }
   
-  void CPUFrameWrapper::updateSize()
+  void CPUFrameWrapper::allocate()
   {
-    if (m_newSize == m_currentSize && m_newColorType == m_currentColorType)
-      return;
-    FrameWrapper::updateSize();
-
-    if (m_currentSize.x * m_currentSize.y == 0)
-      return;
-
-    if (m_currentColorType == ANARI_UNKNOWN)
-      return;
-
-    if (m_currentColorType == ANARI_FLOAT32_VEC4) {
+    if (m_bufferColorType == ANARI_FLOAT32_VEC4) {
       throw std::runtime_error
         ("support for FLOAT32_VEC4 color channel not implemented");
     }
 
-    compositor.resize(m_currentSize.x, m_currentSize.y);
+    compositor.resize(m_bufferSize.x, m_bufferSize.y);
+
+    if (m_bufferColorType == ANARI_UNKNOWN)
+      m_noColor.assign(size_t(m_bufferSize.x) * m_bufferSize.y, 0u);
   }
 
   void CPUFrameWrapper::composite()
   {
-    anariFrameReady(m_device, m_frame, ANARI_WAIT);
+    const bool hasColor = m_bufferColorType != ANARI_UNKNOWN;
     anari::math::uint2 size;
     ANARIDataType ptType = ANARI_UNKNOWN;
     const float *depth
       = (const float *)anariMapFrame(m_device, m_frame, "channel.depth",
                                      &size.x, &size.y, &ptType);
-    const uint32_t *color
-      = (const uint32_t *)anariMapFrame(m_device, m_frame, "channel.color",
-                                        &size.x, &size.y, &ptType);
+    const uint32_t *color = hasColor
+      ? (const uint32_t *)anariMapFrame(m_device, m_frame, "channel.color",
+                                        &size.x, &size.y, &ptType)
+      : m_noColor.data();
 
     compositor.run((uint32_t *)m_color, m_depth, color, depth);
 
     anariUnmapFrame(m_device, m_frame, "channel.depth");
-    anariUnmapFrame(m_device, m_frame, "channel.color");
+    if (hasColor)
+      anariUnmapFrame(m_device, m_frame, "channel.color");
   }
 
   void CPUFrameWrapper::cleanup()
   {
+    m_noColor = {};
   }
 
 } // namespace ptc

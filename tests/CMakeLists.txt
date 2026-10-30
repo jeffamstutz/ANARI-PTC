@@ -73,31 +73,50 @@ function(ptc_set_test_environment test ranks)
   endif()
 endfunction()
 
-# Each color/rank combination runs twice: without channel.depth (mapping depth
-# must be refused) and with it (--depth: composited depth must be correct).
-foreach(color ${PTC_TEST_COLORS})
+# Add ptc_smoke_<name>_<ranks>ranks for each rank count. If any color the test
+# renders is float32, the CPU build expects it to fail: the CPU compositor does
+# not support FLOAT32_VEC4 yet (ticket 08). Only that specific error counts as
+# a pass, so unrelated failures still show up.
+function(ptc_add_smoke_tests name)
   foreach(ranks ${PTC_TEST_RANKS})
-    foreach(depth "" "depth")
-      if (depth)
-        set(name ${color}_depth)
-        set(flags --depth)
-      else()
-        set(name ${color})
-        set(flags "")
-      endif()
-      set(test ptc_smoke_${name}_${ranks}ranks)
-      ptc_smoke_command(cmd ${ranks} --color ${color} ${flags})
-      add_test(NAME ${test} COMMAND ${cmd})
-      ptc_set_test_environment(${test} ${ranks})
-      # Expected failure: the CPU compositor does not support FLOAT32_VEC4 yet
-      # (ticket 08). Only that specific error counts as a pass, so unrelated
-      # failures still show up.
-      if (NOT USE_CUDA AND color STREQUAL "float32")
-        set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION
-          "support for FLOAT32_VEC4 color channel not implemented")
-      endif()
-    endforeach()
+    set(test ptc_smoke_${name}_${ranks}ranks)
+    ptc_smoke_command(cmd ${ranks} ${ARGN})
+    add_test(NAME ${test} COMMAND ${cmd})
+    ptc_set_test_environment(${test} ${ranks})
+    if (NOT USE_CUDA AND "float32" IN_LIST ARGN)
+      set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION
+        "support for FLOAT32_VEC4 color channel not implemented")
+    endif()
   endforeach()
+endfunction()
+
+# Each color runs twice: without channel.depth (mapping depth must be refused)
+# and with it (--depth: composited depth must be correct).
+foreach(color ${PTC_TEST_COLORS})
+  ptc_add_smoke_tests(${color} --color ${color})
+  ptc_add_smoke_tests(${color}_depth --color ${color} --depth)
+endforeach()
+
+# Frame parameters changing between two frames (ticket 05). Each also flips
+# channel.depth between the frames.
+foreach(color ${PTC_TEST_COLORS})
+  ptc_add_smoke_tests(${color}_resize --color ${color} --resize)
+endforeach()
+ptc_add_smoke_tests(retype_float32_to_ufixed8
+  --first-color float32 --color ufixed8 --depth)
+ptc_add_smoke_tests(retype_ufixed8_to_float32
+  --first-color ufixed8 --color float32 --depth)
+# same pixel size, so this is the color type change the CPU path can run
+ptc_add_smoke_tests(retype_ufixed8_linear_to_ufixed8
+  --first-color ufixed8-linear --color ufixed8)
+# no channel.color: nothing to map, but depth still composites
+ptc_add_smoke_tests(nocolor_depth --color none --depth)
+ptc_add_smoke_tests(unset_color --first-color ufixed8 --color none --depth)
+ptc_add_smoke_tests(unset_all
+  --unset-all --resize --first-color ufixed8-linear --color ufixed8)
+ptc_add_smoke_tests(unset_all_depth --unset-all --color ufixed8 --depth)
+foreach(color ${PTC_TEST_COLORS})
+  ptc_add_smoke_tests(${color}_uncommitted --color ${color} --uncommitted)
 endforeach()
 
 # Failure path: with inverted expectations the pixel check must fail and

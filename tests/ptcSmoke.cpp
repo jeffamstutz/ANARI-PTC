@@ -9,17 +9,34 @@
 // Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
 // required ANARI 1.1 device properties.
 //
-// Usage: ptcSmoke [--color ufixed8|float32] [--depth] [--invert-check]
-//                 [--expect-library <path>]
+// Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|none] [--depth]
+//                 [--resize] [--first-color <type>] [--unset-all]
+//                 [--uncommitted] [--invert-check] [--expect-library <path>]
 //
-//   --color           frame color channel type (default ufixed8)
+//   --color           frame color channel type (default ufixed8); 'none'
+//                     leaves channel.color unset and checks that mapping
+//                     color is refused
 //   --depth           enable channel.depth and check the composited depth;
 //                     without it, check that mapping depth is refused
+//   --resize          render a first frame at half the size, then resize
+//   --first-color     render a first frame with this color type, then change
+//                     it to --color
+//   --unset-all       render a first frame, then anariUnsetAllParameters and
+//                     set the final parameters again
+//   --uncommitted     before the final render, set a different size and
+//                     color type without committing them; they must not
+//                     take effect
 //   --invert-check    expect the wrong colors, so the pixel check must fail;
 //                     used to test the harness's failure path
 //   --expect-library  fail unless the loaded libanari_library_ptc is this
 //                     file (guards against picking up an installed copy
 //                     instead of the one under test)
+//
+// With --resize, --first-color or --unset-all, a first frame is rendered and
+// its color map is checked, then the frame's parameters change and the full
+// checks run on the second frame. The first frame also has the opposite
+// channel.depth setting, so depth is enabled or disabled between frames too.
+// Without --unset-all, parameters that go away are unset one by one.
 //
 // Every rank exits non-zero if any rank recorded a failure.
 
@@ -43,12 +60,30 @@ using namespace anari::math;
 
 namespace {
 
+// The frame parameters ptc tracks. color == ANARI_UNKNOWN means unset.
+struct FrameState
+{
+  uint2 size;
+  ANARIDataType color{ANARI_UNKNOWN};
+  bool depth{false};
+};
+
 struct Options
 {
   ANARIDataType colorType{ANARI_UFIXED8_RGBA_SRGB};
   bool depth{false};
+  bool resize{false};
+  bool hasFirstColor{false};
+  ANARIDataType firstColorType{ANARI_UNKNOWN};
+  bool unsetAll{false};
+  bool uncommitted{false};
   bool invertCheck{false};
   std::string expectLibrary;
+
+  bool twoFrames() const
+  {
+    return resize || hasFirstColor || unsetAll;
+  }
 };
 
 const float3 kColors[] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 1, 0}};
@@ -61,8 +96,9 @@ const int kNumColors = int(sizeof(kColors) / sizeof(kColors[0]));
 const float kSphereRadius = 0.3f;
 const float kCameraZ = 5.f;
 
-// Status messages at WARNING or worse that mention channel.depth
+// Status messages at WARNING or worse that mention channel.depth/color
 int g_depthWarnings = 0;
+int g_colorWarnings = 0;
 
 void statusFunc(const void *,
     ANARIDevice,
@@ -75,7 +111,25 @@ void statusFunc(const void *,
   if (sev <= ANARI_SEVERITY_WARNING) {
     fprintf(stderr, "[anari] %s\n", msg);
     g_depthWarnings += std::string(msg).find("channel.depth") != std::string::npos;
+    g_colorWarnings += std::string(msg).find("channel.color") != std::string::npos;
   }
+}
+
+bool parseColorType(const std::string &type, ANARIDataType &out)
+{
+  if (type == "ufixed8")
+    out = ANARI_UFIXED8_RGBA_SRGB;
+  else if (type == "ufixed8-linear")
+    out = ANARI_UFIXED8_VEC4;
+  else if (type == "float32")
+    out = ANARI_FLOAT32_VEC4;
+  else if (type == "none")
+    out = ANARI_UNKNOWN;
+  else {
+    fprintf(stderr, "unknown color type '%s'\n", type.c_str());
+    return false;
+  }
+  return true;
 }
 
 bool parseArgs(int argc, char **argv, Options &opts)
@@ -83,22 +137,27 @@ bool parseArgs(int argc, char **argv, Options &opts)
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
     const bool hasValue = i + 1 < argc;
-    if ((arg == "--color" || arg == "--expect-library") && !hasValue) {
+    if ((arg == "--color" || arg == "--first-color"
+            || arg == "--expect-library")
+        && !hasValue) {
       fprintf(stderr, "missing value for '%s'\n", arg.c_str());
       return false;
     }
     if (arg == "--color") {
-      const std::string type = argv[++i];
-      if (type == "ufixed8")
-        opts.colorType = ANARI_UFIXED8_RGBA_SRGB;
-      else if (type == "float32")
-        opts.colorType = ANARI_FLOAT32_VEC4;
-      else {
-        fprintf(stderr, "unknown color type '%s'\n", type.c_str());
+      if (!parseColorType(argv[++i], opts.colorType))
         return false;
-      }
+    } else if (arg == "--first-color") {
+      opts.hasFirstColor = true;
+      if (!parseColorType(argv[++i], opts.firstColorType))
+        return false;
     } else if (arg == "--depth")
       opts.depth = true;
+    else if (arg == "--resize")
+      opts.resize = true;
+    else if (arg == "--unset-all")
+      opts.unsetAll = true;
+    else if (arg == "--uncommitted")
+      opts.uncommitted = true;
     else if (arg == "--invert-check")
       opts.invertCheck = true;
     else if (arg == "--expect-library")
@@ -278,7 +337,16 @@ anari::World buildWorld(anari::Device d, int rank, int size)
   return world;
 }
 
-anari::Frame buildFrame(anari::Device d, const Options &opts, anari::World w)
+// Objects the frame references; kept alive so they can be set again after
+// anariUnsetAllParameters.
+struct Scene
+{
+  anari::World world;
+  anari::Camera camera;
+  anari::Renderer renderer;
+};
+
+Scene buildScene(anari::Device d, anari::World w)
 {
   auto cam = anari::newObject<anari::Camera>(d, "orthographic");
   anari::setParameter(d, cam, "position", float3(0, 0, kCameraZ));
@@ -293,21 +361,106 @@ anari::Frame buildFrame(anari::Device d, const Options &opts, anari::World w)
   anari::setParameter(d, ren, "ambientRadiance", 1.f);
   anari::commitParameters(d, ren);
 
-  auto frame = anari::newObject<anari::Frame>(d);
-  anari::setParameter(d, frame, "size", kImageSize);
-  anari::setParameter(d, frame, "channel.color", opts.colorType);
-  if (opts.depth)
+  return {w, cam, ren};
+}
+
+void releaseScene(anari::Device d, const Scene &s)
+{
+  anari::release(d, s.world);
+  anari::release(d, s.camera);
+  anari::release(d, s.renderer);
+}
+
+// Set every parameter of `state` (and the scene objects) on the frame.
+void setAllParameters(
+    anari::Device d, anari::Frame frame, const Scene &scene, const FrameState &state)
+{
+  anari::setParameter(d, frame, "world", scene.world);
+  anari::setParameter(d, frame, "camera", scene.camera);
+  anari::setParameter(d, frame, "renderer", scene.renderer);
+  anari::setParameter(d, frame, "size", state.size);
+  if (state.color != ANARI_UNKNOWN)
+    anari::setParameter(d, frame, "channel.color", state.color);
+  if (state.depth)
     anari::setParameter(d, frame, "channel.depth", ANARI_FLOAT32);
-  anari::setAndReleaseParameter(d, frame, "world", w);
-  anari::setAndReleaseParameter(d, frame, "camera", cam);
-  anari::setAndReleaseParameter(d, frame, "renderer", ren);
+}
+
+// Move the frame from `prev` to `next`: set what changed and unset what went
+// away, or with `unsetAll` start over from anariUnsetAllParameters. Commits.
+void changeParameters(anari::Device d,
+    anari::Frame frame,
+    const Scene &scene,
+    const FrameState &prev,
+    const FrameState &next,
+    bool unsetAll)
+{
+  if (unsetAll) {
+    anari::unsetAllParameters(d, frame);
+    setAllParameters(d, frame, scene, next);
+  } else {
+    if (next.size != prev.size)
+      anari::setParameter(d, frame, "size", next.size);
+    if (next.color == ANARI_UNKNOWN)
+      anari::unsetParameter(d, frame, "channel.color");
+    else if (next.color != prev.color)
+      anari::setParameter(d, frame, "channel.color", next.color);
+    if (!next.depth)
+      anari::unsetParameter(d, frame, "channel.depth");
+    else if (!prev.depth)
+      anari::setParameter(d, frame, "channel.depth", ANARI_FLOAT32);
+  }
   anari::commitParameters(d, frame);
-  return frame;
+}
+
+// Rank 0 only: the frame has no channel.color, so mapping color returns
+// nothing and reports why through the status callback.
+int checkColorRefused(anari::Device d, anari::Frame frame, const char *which)
+{
+  const int warningsBefore = g_colorWarnings;
+  auto fb = anari::map<void>(d, frame, "channel.color");
+  const bool ok = !fb.data && fb.width == 0 && fb.height == 0
+      && fb.pixelType == ANARI_UNKNOWN && g_colorWarnings > warningsBefore;
+  printf("%s: %s: unset color map refused (data=%p %ux%u type=%d, "
+         "warning %s)\n",
+      ok ? "PASS" : "FAIL",
+      which,
+      fb.data,
+      fb.width,
+      fb.height,
+      int(fb.pixelType),
+      g_colorWarnings > warningsBefore ? "reported" : "missing");
+  anari::unmap(d, frame, "channel.color");
+  return !ok;
+}
+
+// Rank 0 only, first of two frames: the color map has that frame's size and
+// type (or is refused if it has no color).
+int checkFirstFrame(anari::Device d, anari::Frame frame, const FrameState &state)
+{
+  if (state.color == ANARI_UNKNOWN)
+    return checkColorRefused(d, frame, "first frame");
+  auto fb = anari::map<void>(d, frame, "channel.color");
+  const bool ok = fb.data && fb.width == state.size.x
+      && fb.height == state.size.y && fb.pixelType == state.color;
+  printf("%s: first frame color map (data=%p %ux%u type=%d, want %ux%u "
+         "type=%d)\n",
+      ok ? "PASS" : "FAIL",
+      fb.data,
+      fb.width,
+      fb.height,
+      int(fb.pixelType),
+      state.size.x,
+      state.size.y,
+      int(state.color));
+  anari::unmap(d, frame, "channel.color");
+  return !ok;
 }
 
 // Rank 0 only: probe the pixel at the center of each rank's sphere.
 int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int size)
 {
+  if (opts.colorType == ANARI_UNKNOWN)
+    return checkColorRefused(d, frame, "final frame");
   int failures = 0;
   auto fb = anari::map<void>(d, frame, "channel.color");
   if (!fb.data || fb.width != kImageSize.x || fb.height != kImageSize.y
@@ -449,8 +602,34 @@ int main(int argc, char **argv)
 
   failures += checkDeviceConformance(lib, d, rank);
 
-  auto world = buildWorld(d, rank, size);
-  auto frame = buildFrame(d, opts, world);
+  const Scene scene = buildScene(d, buildWorld(d, rank, size));
+  const FrameState final{kImageSize, opts.colorType, opts.depth};
+  auto frame = anari::newObject<anari::Frame>(d);
+
+  if (opts.twoFrames()) {
+    const FrameState first{opts.resize ? kImageSize / 2u : kImageSize,
+        opts.hasFirstColor ? opts.firstColorType : opts.colorType,
+        !opts.depth};
+    setAllParameters(d, frame, scene, first);
+    anari::commitParameters(d, frame);
+    anari::render(d, frame);
+    anari::wait(d, frame);
+    if (rank == 0)
+      failures += checkFirstFrame(d, frame, first);
+    changeParameters(d, frame, scene, first, final, opts.unsetAll);
+  } else {
+    setAllParameters(d, frame, scene, final);
+    anari::commitParameters(d, frame);
+  }
+
+  if (opts.uncommitted) {
+    // ANARI parameters take effect on commit: rendering must still use the
+    // committed size and color type
+    anari::setParameter(d, frame, "size", kImageSize / 2u);
+    anari::setParameter(d, frame, "channel.color",
+        opts.colorType == ANARI_UFIXED8_VEC4 ? ANARI_UFIXED8_RGBA_SRGB
+                                             : ANARI_UFIXED8_VEC4);
+  }
 
   anari::render(d, frame);
   anari::wait(d, frame);
@@ -462,6 +641,7 @@ int main(int argc, char **argv)
   }
 
   anari::release(d, frame);
+  releaseScene(d, scene);
   anari::release(d, d);
   anari::unloadLibrary(lib);
 

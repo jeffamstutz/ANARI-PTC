@@ -96,8 +96,28 @@ namespace ptc {
     /////////////////////////////////////////////////////////////////////////////
 
   protected:
-    virtual void updateSize();
+    // The frame parameters ptc tracks, with the defaults the wrapped frame
+    // uses when they are unset or set with the wrong type.
+    struct TrackedParameters
+    {
+      anari::math::uint2 size{0u, 0u};
+      ANARIDataType colorType{ANARI_UNKNOWN};
+      // Whether the *app* enabled channel.depth, which decides whether the
+      // composited depth may be mapped. The wrapped frame always renders
+      // depth, since compositing needs it.
+      bool depthEnabled{false};
+    };
+
+    /*! (re)allocates the buffers if the committed size or color type
+        differs from what they were allocated for */
+    void updateBuffers();
+    /*! allocates the subclass's resources for m_bufferSize and
+        m_bufferColorType; only called with a non-empty size */
+    virtual void allocate() = 0;
+    /*! composites the wrapped frame's channels into m_color and m_depth;
+        only called with a non-empty size */
     virtual void composite() = 0;
+    /*! frees what allocate() allocated */
     virtual void cleanup() = 0;
 
     FrameWrapperNotificationHandler m_onObjectDestroy;
@@ -108,16 +128,16 @@ namespace ptc {
     ANARIDevice m_device{nullptr};
     ANARIFrame m_frame{nullptr};
 
-    ANARIDataType m_newColorType{ANARI_UNKNOWN};
-    ANARIDataType m_currentColorType{ANARI_UNKNOWN};
-    anari::math::uint2 m_newSize{0u, 0u};
-    anari::math::uint2 m_currentSize{0u, 0u};
+    // Set/unset write m_pending; commitParameters() copies it to m_committed,
+    // as the wrapped frame does with its own parameters.
+    TrackedParameters m_pending;
+    TrackedParameters m_committed;
 
-    // The wrapped frame always renders depth (compositing needs it); these
-    // track whether the *app* enabled channel.depth, which decides whether
-    // the composited depth may be mapped. Set -> pending, commit -> current.
-    bool m_newDepthEnabled{false};
-    bool m_depthEnabled{false};
+    // What the buffers below were allocated for (from m_committed, at the
+    // last render). With no color type the compositor still runs, on
+    // transparent black input, so depth composites.
+    anari::math::uint2 m_bufferSize{0u, 0u};
+    ANARIDataType m_bufferColorType{ANARI_UNKNOWN};
 
     float *m_depth = nullptr;
     void  *m_color = nullptr;
@@ -129,6 +149,14 @@ namespace ptc {
 
 
   // Helper functions ///////////////////////////////////////////////////////////
+
+  /*! bytes per pixel of the composited color buffer; without a color type
+      (ANARI_UNKNOWN) the compositor still works on 32-bit RGBA */
+  inline size_t colorPixelSize(ANARIDataType colorType)
+  {
+    return colorType == ANARI_FLOAT32_VEC4 ? 4 * sizeof(float)
+                                           : sizeof(uint32_t);
+  }
 
   template <typename T>
   T bit_cast(ANARIDataType type, const void *mem)
