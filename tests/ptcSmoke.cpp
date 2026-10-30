@@ -9,14 +9,18 @@
 // Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
 // required ANARI 1.1 device properties.
 //
-// Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|none] [--depth]
+// Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|float32-vec3|none]
+//                 [--depth]
 //                 [--resize] [--first-color <type>] [--unset-all]
 //                 [--uncommitted] [--callback] [--invert-check]
 //                 [--expect-library <path>]
 //
 //   --color           frame color channel type (default ufixed8); 'none'
 //                     leaves channel.color unset and checks that mapping
-//                     color is refused
+//                     color is refused; 'float32-vec3' is a type ptc cannot
+//                     composite, so rendering must report an ERROR through
+//                     the status callback on every rank (not throw) and
+//                     mapping color must be refused
 //   --depth           enable channel.depth and check the composited depth;
 //                     without it, check that mapping depth is refused
 //   --resize          render a first frame at half the size, then resize
@@ -108,6 +112,8 @@ const float kCameraZ = 5.f;
 // Status messages at WARNING or worse that mention channel.depth/color
 int g_depthWarnings = 0;
 int g_colorWarnings = 0;
+// Status messages at ERROR or worse that mention channel.color
+int g_colorErrors = 0;
 
 void statusFunc(const void *,
     ANARIDevice,
@@ -122,6 +128,8 @@ void statusFunc(const void *,
     g_depthWarnings += std::string(msg).find("channel.depth") != std::string::npos;
     g_colorWarnings += std::string(msg).find("channel.color") != std::string::npos;
   }
+  if (sev <= ANARI_SEVERITY_ERROR)
+    g_colorErrors += std::string(msg).find("channel.color") != std::string::npos;
 }
 
 bool parseColorType(const std::string &type, ANARIDataType &out)
@@ -132,6 +140,8 @@ bool parseColorType(const std::string &type, ANARIDataType &out)
     out = ANARI_UFIXED8_VEC4;
   else if (type == "float32")
     out = ANARI_FLOAT32_VEC4;
+  else if (type == "float32-vec3")
+    out = ANARI_FLOAT32_VEC3;
   else if (type == "none")
     out = ANARI_UNKNOWN;
   else {
@@ -139,6 +149,13 @@ bool parseColorType(const std::string &type, ANARIDataType &out)
     return false;
   }
   return true;
+}
+
+// Color types ptc composites (or ANARI_UNKNOWN: no color)
+bool compositable(ANARIDataType type)
+{
+  return type == ANARI_UNKNOWN || type == ANARI_UFIXED8_VEC4
+      || type == ANARI_UFIXED8_RGBA_SRGB || type == ANARI_FLOAT32_VEC4;
 }
 
 bool parseArgs(int argc, char **argv, Options &opts)
@@ -502,7 +519,7 @@ int checkFirstFrame(anari::Device d, anari::Frame frame, const FrameState &state
 // Rank 0 only: probe the pixel at the center of each rank's sphere.
 int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int size)
 {
-  if (opts.colorType == ANARI_UNKNOWN)
+  if (!compositable(opts.colorType) || opts.colorType == ANARI_UNKNOWN)
     return checkColorRefused(d, frame, "final frame");
   int failures = 0;
   auto fb = anari::map<void>(d, frame, "channel.color");
@@ -742,9 +759,25 @@ int main(int argc, char **argv)
 
   g_callback.rendering = &finalState;
   g_callback.finalFrame = true;
+  const int errorsBefore = g_colorErrors;
   anari::render(d, frame);
   anari::wait(d, frame);
   renders++;
+
+  // Every rank: a render error comes through the status callback (the
+  // process is still here, so nothing threw out of anariRenderFrame).
+  {
+    Checker c{rank};
+    const bool wantError = !compositable(opts.colorType);
+    const bool gotError = g_colorErrors > errorsBefore;
+    c.expect(wantError == gotError,
+        wantError ? "no ERROR about channel.color reported for an "
+                    "uncompositable color type"
+                  : "unexpected ERROR about channel.color reported");
+    if (wantError && !c.failures)
+      printf("PASS: rank %d: render error reported\n", rank);
+    failures += c.failures;
+  }
 
   if (rank == 0) {
     failures += checkColor(d, frame, opts, size);

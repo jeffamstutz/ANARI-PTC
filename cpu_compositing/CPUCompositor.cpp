@@ -22,6 +22,7 @@
 #include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
 #include <cmath>
+#include <algorithm>
 #include <limits>
 
 namespace ptc {
@@ -65,58 +66,100 @@ namespace ptc {
   
   int divRoundUp(int a, int b) { return (a+b-1)/b; }
 
-  struct Fragment {
-    inline uint32_t rgba8() const
-    {
-      uint32_t r = uint32_t(std::min(255.f,color.x * 255.f + .5f));
-      uint32_t g = uint32_t(std::min(255.f,color.y * 255.f + .5f));
-      uint32_t b = uint32_t(std::min(255.f,color.z * 255.f + .5f));
-      uint32_t a = uint32_t(std::min(255.f,alpha * 255.f + .5f));
-      return r | (g << 8) | (b << 16) | (a << 24);
-    }
-    math::float3 color;
-    float        alpha;
-  };
-  
-  /*! depth that stands in for 'nothing hit' inside a LongFrag; any input
-      depth at or beyond it (+inf, or FLT_MAX as helide writes) is a miss */
+  /*! depth that stands in for 'nothing hit' while sorting; any input depth
+      at or beyond it (+inf, or FLT_MAX as helide writes), and NaN, is a
+      miss */
   constexpr float noHitDepth = 1e20f;
 
-  /*! color in the low 32 bits, depth's bit pattern in the high 32 bits:
-      for non-negative depths, sorting the 64-bit values sorts by depth */
-  struct LongFrag {
-    static LongFrag make(uint32_t color, float depth)
-    {
-      if (!(depth < noHitDepth)) depth = noHitDepth;
-      uint32_t depthBits;
-      memcpy(&depthBits, &depth, sizeof(depthBits));
-      return { (uint64_t(depthBits) << 32) | color };
-    }
+  /*! one rank's fragment of a pixel, for sorting: nearest first, and on
+      equal depth by rank, so the order does not depend on the sort */
+  struct Fragment {
+    float    depth;
+    uint32_t rank;
 
-    inline float depth() const {
-      const uint32_t depthBits = uint32_t(bits >> 32);
-      float depth;
-      memcpy(&depth, &depthBits, sizeof(depth));
-      return depth;
-    }
-    
-    inline Fragment color() const
+    bool operator<(const Fragment &other) const
     {
-      float r = ((bits >>  0) & 0xff) * (1.f/255.f);
-      float g = ((bits >>  8) & 0xff) * (1.f/255.f);
-      float b = ((bits >> 16) & 0xff) * (1.f/255.f);
-      float a = ((bits >> 24) & 0xff) * (1.f/255.f);
-      Fragment ret;
-      ret.color.x = r;
-      ret.color.y = g;
-      ret.color.z = b;
-      ret.alpha = a;
-      return ret;
+      return depth < other.depth
+        || (depth == other.depth && rank < other.rank);
     }
-    
-    uint64_t bits;
   };
-  
+
+  /*! [0,1] to 0..255, rounded; out-of-range values (and NaN) clamp */
+  inline uint32_t toUnorm8(float v)
+  {
+    v = v * 255.f + .5f;
+    if (!(v > 0.f)) return 0;
+    if (v >= 255.f) return 255;
+    return uint32_t(v);
+  }
+
+  /*! ColorFormat::RGBA8: one uint32_t per pixel, r in the low byte */
+  struct RGBA8Pixel {
+    using Element = uint32_t;
+    static math::float4 load(const Element *buf, size_t i)
+    {
+      const uint32_t v = buf[i];
+      return math::float4(float((v >>  0) & 0xff),
+                          float((v >>  8) & 0xff),
+                          float((v >> 16) & 0xff),
+                          float((v >> 24) & 0xff)) * (1.f/255.f);
+    }
+    static void store(Element *buf, size_t i, const math::float4 &c)
+    {
+      buf[i] = toUnorm8(c.x)
+        | (toUnorm8(c.y) << 8)
+        | (toUnorm8(c.z) << 16)
+        | (toUnorm8(c.w) << 24);
+    }
+  };
+
+  /*! ColorFormat::RGBA32F: four floats per pixel, r first */
+  struct RGBA32FPixel {
+    using Element = float;
+    static math::float4 load(const Element *buf, size_t i)
+    {
+      const Element *p = buf + 4*i;
+      return math::float4(p[0], p[1], p[2], p[3]);
+    }
+    static void store(Element *buf, size_t i, const math::float4 &c)
+    {
+      Element *p = buf + 4*i;
+      p[0] = c.x;
+      p[1] = c.y;
+      p[2] = c.z;
+      p[3] = c.w;
+    }
+  };
+
+  void CPUCompositor::ColorBuffer::resize(ColorFormat format, size_t numPixels)
+  {
+    // only keep the buffer for the format in use
+    if (format == ColorFormat::RGBA32F) {
+      rgba8 = {};
+      rgba32f.resize(4*numPixels);
+    } else {
+      rgba32f = {};
+      rgba8.resize(numPixels);
+    }
+  }
+
+  void *CPUCompositor::ColorBuffer::data(ColorFormat format)
+  {
+    return format == ColorFormat::RGBA32F
+      ? (void *)rgba32f.data()
+      : (void *)rgba8.data();
+  }
+
+  int CPUCompositor::colorElementsPerPixel() const
+  {
+    return format == ColorFormat::RGBA32F ? 4 : 1;
+  }
+
+  MPI_Datatype CPUCompositor::colorElementType() const
+  {
+    return format == ColorFormat::RGBA32F ? MPI_FLOAT : MPI_UINT32_T;
+  }
+
   CPUCompositor::CPUCompositor(MPI_Comm comm)
   {
     mpi.comm = comm;
@@ -127,6 +170,10 @@ namespace ptc {
     p2p.sendCount.resize(mpi.size);
     p2p.recvOffset.resize(mpi.size);
     p2p.recvCount.resize(mpi.size);
+    p2p.colorSendOffset.resize(mpi.size);
+    p2p.colorSendCount.resize(mpi.size);
+    p2p.colorRecvOffset.resize(mpi.size);
+    p2p.colorRecvCount.resize(mpi.size);
 
     if (mpi.rank == 0) {
       finalGather.rank0.recvCount.resize(mpi.size);
@@ -156,21 +203,21 @@ namespace ptc {
                  std::min(chunk_end*chunkSize,numPixels));
   }
   
-  void CPUCompositor::resize(int sx, int sy)
+  void CPUCompositor::resize(int sx, int sy, ColorFormat format)
   {
     assert(sx > 0);
     assert(sy > 0);
     size = { sx,sy };
+    this->format = format;
 
     MPI_Barrier(mpi.comm);
     
     Range myRange = rangeOfPeer(mpi.rank);
     int recvBufSize = myRange.size() * mpi.size;
-    p2p.recvBuf.color.resize(recvBufSize);
+    p2p.recvBuf.color.resize(format, recvBufSize);
     p2p.recvBuf.depth.resize(recvBufSize);
-    finalGather.anyRank.sendOffset = 0;
     finalGather.anyRank.sendCount  = myRange.size();
-    finalGather.anyRank.sendBuf.color.resize(myRange.size());
+    finalGather.anyRank.sendBuf.color.resize(format, myRange.size());
     finalGather.anyRank.sendBuf.depth.resize(myRange.size());
 
     if (mpi.rank == 0) {
@@ -184,6 +231,7 @@ namespace ptc {
     }
       
     { /* compute receive offsets into peer-to-peer exchange state */
+      const int elems = colorElementsPerPixel();
       int recvOffset = 0;
       int sendOffset = 0;
       for (int peer=0;peer<mpi.size;peer++) {
@@ -195,49 +243,87 @@ namespace ptc {
         p2p.recvOffset[peer] = recvOffset;
         p2p.recvCount[peer] = myRange.size();
 
+        p2p.colorSendOffset[peer] = elems * p2p.sendOffset[peer];
+        p2p.colorSendCount[peer]  = elems * p2p.sendCount[peer];
+        p2p.colorRecvOffset[peer] = elems * p2p.recvOffset[peer];
+        p2p.colorRecvCount[peer]  = elems * p2p.recvCount[peer];
+
         recvOffset += p2p.recvCount[peer];
         sendOffset += p2p.sendCount[peer];
       }
     }
     MPI_Barrier(mpi.comm);
   }
+
+  /*! blends each of my pixels' fragments (one per rank, from the p2p
+      receive buffers) into the final gather's send buffers */
+  template <typename PIXEL_T>
+  void CPUCompositor::compositeMyRange()
+  {
+    using Element = typename PIXEL_T::Element;
+    const Element *colors
+      = (const Element *)p2p.recvBuf.color.data(format);
+    Element *outColors
+      = (Element *)finalGather.anyRank.sendBuf.color.data(format);
+    const float *depths = p2p.recvBuf.depth.data();
+    float *outDepths = finalGather.anyRank.sendBuf.depth.data();
+
+    const size_t numPixels = (size_t)rangeOfPeer(mpi.rank).size();
+    // rank r's fragment of pixel i is at [i + r*numPixels]
+    const size_t rankStep = numPixels;
+    parallel_for_blocked
+      (0,numPixels,blockSize,[&](size_t begin,size_t end) {
+        std::vector<Fragment> fragments(mpi.size);
+        for (size_t it=begin;it<end;it++) {
+          for (size_t r=0;r<fragments.size();r++) {
+            float depth = depths[it + r*rankStep];
+            if (!(depth < noHitDepth)) depth = noHitDepth;
+            fragments[r] = { depth, (uint32_t)r };
+          }
+          std::sort(fragments.begin(), fragments.end());
+
+          // back to front: each fragment goes over what is behind it
+          math::float4 composited
+            = PIXEL_T::load(colors, it + fragments.back().rank*rankStep);
+          for (size_t i=fragments.size()-1;i-- > 0;) {
+            const math::float4 frag
+              = PIXEL_T::load(colors, it + fragments[i].rank*rankStep);
+            const float alpha = frag.w;
+            composited = math::float4(
+              alpha * math::float3(frag.x,frag.y,frag.z)
+              + (1.f-alpha) * math::float3(composited.x,
+                                           composited.y,
+                                           composited.z),
+              alpha + (1.f-alpha) * composited.w);
+          }
+
+          float final_depth = fragments.front().depth;
+          if (final_depth >= noHitDepth)
+            final_depth = std::numeric_limits<float>::infinity();
+
+          PIXEL_T::store(outColors, it, composited);
+          outDepths[it] = final_depth;
+        }
+      });
+  }
   
   /*! out_color and out_depth should be null on all ranks > 0 */
-  void CPUCompositor::run(uint32_t *out_color,
-                          float    *out_depth,
-                          const uint32_t *in_color,
-                          const float    *in_depth)
+  void CPUCompositor::run(void        *out_color,
+                          float       *out_depth,
+                          const void  *in_color,
+                          const float *in_depth)
   {
-    int dbgID = size.x/2 + size.x*size.y/3;
-
     // ------------------------------------------------------------------
     // peer-to-peer stage
     // ------------------------------------------------------------------
-    // for (int i=0;i<mpi.size;i++) {
-    //   MPI_Barrier(mpi.comm);
-    //   if (i == mpi.rank) {
-    //     for (int j=0;j<mpi.size;j++)
-    //       printf("(%i) p2p.sencnt %i sendofs %i rcvcount %i rcvofs %i\n",
-    //              j,
-    //              p2p.sendCount[j],
-    //              p2p.sendOffset[j],
-    //              p2p.recvCount[j],
-    //              p2p.recvOffset[j]);
-    //     printf("(%i) pixel %i color %x depth %f\n",
-    //            mpi.rank,
-    //            dbgID,
-    //            in_color[dbgID],
-    //            in_depth[dbgID]);
-    //   }
-    // }
     MPI_Alltoallv(in_color,
-                  p2p.sendCount.data(),
-                  p2p.sendOffset.data(),
-                  MPI_INT,
-                  p2p.recvBuf.color.data(),
-                  p2p.recvCount.data(),
-                  p2p.recvOffset.data(),
-                  MPI_INT,
+                  p2p.colorSendCount.data(),
+                  p2p.colorSendOffset.data(),
+                  colorElementType(),
+                  p2p.recvBuf.color.data(format),
+                  p2p.colorRecvCount.data(),
+                  p2p.colorRecvOffset.data(),
+                  colorElementType(),
                   mpi.comm);
     MPI_Alltoallv(in_depth,
                   p2p.sendCount.data(),
@@ -249,95 +335,45 @@ namespace ptc {
                   MPI_FLOAT,
                   mpi.comm);
 
-    MPI_Barrier(mpi.comm);
-    // // ------------------------------------------------------------------
-    // // local compositing stage
-    // // ------------------------------------------------------------------
-    Range myRange = rangeOfPeer(mpi.rank);
-    parallel_for_blocked
-      (0,(size_t)myRange.size(),blockSize,[&](size_t begin,size_t end) {
-        // size_t begin = blockID*blockSize;
-        // size_t end = std::min(begin+blockSize,myRange.end);
-        std::vector<LongFrag> fragments(mpi.size);
-        const uint32_t *colors = p2p.recvBuf.color.data();
-        const float    *depths = p2p.recvBuf.depth.data();
-        size_t rankStep = myRange.size();
-        for (size_t it=begin;it<end;it++) {
-          bool dbg = false; //((myRange.begin+it) == dbgID);
-
-          // if (dbg) { PRINT(mpi.rank); PRINT(it); }
-          // if (dbg) PRINT(p2p.recvBuf.color.size());
-          
-          for (size_t r=0;r<(size_t)mpi.size;r++) {
-            size_t ofs = it + r*rankStep;
-            // if (dbg) PRINT(ofs);
-            fragments[r] = LongFrag::make(colors[ofs],depths[ofs]);
-            // if (dbg) PRINT((int*)fragments[r].bits);
-          }
-          std::sort(&fragments.begin()->bits,
-                    &fragments.end()->bits);
-          Fragment composited = fragments[mpi.size-1].color();
-           if (dbg) {
-             PRINT(composited.color);
-             PRINT(composited.alpha);
-           }
-          for (int64_t r=(int64_t)mpi.size-2;r>=0;--r) {
-            Fragment thisFrag = fragments[r].color();
-            if (dbg) { PRINT(thisFrag.color); PRINT(thisFrag.alpha); }
-            composited.color
-              = thisFrag.alpha * thisFrag.color
-              + (1.f-thisFrag.alpha) * composited.color;
-            composited.alpha
-              = thisFrag.alpha
-              + (1.f-thisFrag.alpha) * composited.alpha;
-             if (dbg) {
-               PRINT(composited.color);
-               PRINT(composited.alpha);
-             }
-          }
-          float    final_depth = fragments[0].depth();
-          if (final_depth >= noHitDepth)
-            final_depth = std::numeric_limits<float>::infinity();
-          uint32_t final_color = composited.rgba8();
-
-          finalGather.anyRank.sendBuf.color[it] = final_color;
-          finalGather.anyRank.sendBuf.depth[it] = final_depth;
-          // if (dbg) PRINT((int*)final_color);
-        }
-      });
+    // ------------------------------------------------------------------
+    // local compositing stage
+    // ------------------------------------------------------------------
+    if (format == ColorFormat::RGBA32F)
+      compositeMyRange<RGBA32FPixel>();
+    else
+      compositeMyRange<RGBA8Pixel>();
 
     // ------------------------------------------------------------------
     // final gather stage
     // ------------------------------------------------------------------
+    enum { colorTag = 0, depthTag = 1 };
+    const int elems = colorElementsPerPixel();
+    const size_t colorBytesPerPixel = format == ColorFormat::RGBA32F
+      ? 4*sizeof(float) : sizeof(uint32_t);
     std::vector<MPI_Request> requests;
     MPI_Request request;
     if (mpi.rank == 0) {
-      // std::vector<MPI_Request> color_requests(mpi.size);
-      // std::vector<MPI_Request> depth_requests(mpi.size);
       for (int r=0;r<mpi.size;r++) {
-        // printf("master receiving: from %i offset %i cnt %i\n",
-        //        r,
-        //        finalGather.rank0.recvOffset[r],
-        //        finalGather.rank0.recvCount[r]);
-        MPI_Irecv(out_color+finalGather.rank0.recvOffset[r],
-                  finalGather.rank0.recvCount[r],
-                  MPI_INT,r,0,mpi.comm,&request);
+        const int offset = finalGather.rank0.recvOffset[r];
+        const int count  = finalGather.rank0.recvCount[r];
+        MPI_Irecv((char *)out_color + size_t(offset)*colorBytesPerPixel,
+                  elems*count,
+                  colorElementType(),r,colorTag,mpi.comm,&request);
         requests.push_back(request);
-        MPI_Irecv(out_depth+finalGather.rank0.recvOffset[r],
-                  finalGather.rank0.recvCount[r],
-                  MPI_FLOAT,r,0,mpi.comm,&request);
+        MPI_Irecv(out_depth+offset,
+                  count,
+                  MPI_FLOAT,r,depthTag,mpi.comm,&request);
         requests.push_back(request);
       }
     }
     /*everybody:*/{
-      Range myRange = rangeOfPeer(mpi.rank);
-      MPI_Isend(finalGather.anyRank.sendBuf.color.data(),
-                finalGather.anyRank.sendCount,
-                MPI_INT,0,0,mpi.comm,&request);
+      MPI_Isend(finalGather.anyRank.sendBuf.color.data(format),
+                elems*finalGather.anyRank.sendCount,
+                colorElementType(),0,colorTag,mpi.comm,&request);
       requests.push_back(request);
       MPI_Isend(finalGather.anyRank.sendBuf.depth.data(),
                 finalGather.anyRank.sendCount,
-                MPI_FLOAT,0,0,mpi.comm,&request);
+                MPI_FLOAT,0,depthTag,mpi.comm,&request);
       requests.push_back(request);
     }
 

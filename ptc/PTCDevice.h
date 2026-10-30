@@ -227,6 +227,16 @@ namespace ptc {
   void reportMessage(
       ANARIStatusSeverity, const char *fmt, Args &&...args) const;
 
+  // No exception may escape through the C API: every entry point runs its
+  // body through guarded(), which reports an exception as an ERROR through
+  // the status callback and then returns `onError`.
+  template <typename R, typename F>
+  R guarded(const char *entryPoint, R onError, F &&f) const noexcept;
+  template <typename F>
+  void guarded(const char *entryPoint, F &&f) const noexcept;
+  // reports the exception being handled; only call from a catch block
+  void reportException(const char *entryPoint) const noexcept;
+
   bool m_initialized{false};
   uint32_t m_refCount{1};
   anari::DeviceImpl *m_ptd{nullptr};
@@ -261,6 +271,28 @@ inline void PTCDevice::reportMessage(
       severity <= ANARI_SEVERITY_WARNING ? ANARI_STATUS_NO_ERROR
                                          : ANARI_STATUS_UNKNOWN_ERROR,
       msg.c_str());
+}
+
+template <typename R, typename F>
+inline R PTCDevice::guarded(
+    const char *entryPoint, R onError, F &&f) const noexcept
+{
+  try {
+    return f();
+  } catch (...) {
+    reportException(entryPoint);
+  }
+  return onError;
+}
+
+template <typename F>
+inline void PTCDevice::guarded(const char *entryPoint, F &&f) const noexcept
+{
+  try {
+    f();
+  } catch (...) {
+    reportException(entryPoint);
+  }
 }
 
 } // namespace ptc

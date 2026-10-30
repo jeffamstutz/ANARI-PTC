@@ -73,20 +73,13 @@ function(ptc_set_test_environment test ranks)
   endif()
 endfunction()
 
-# Add ptc_smoke_<name>_<ranks>ranks for each rank count. If any color the test
-# renders is float32, the CPU build expects it to fail: the CPU compositor does
-# not support FLOAT32_VEC4 yet (ticket 08). Only that specific error counts as
-# a pass, so unrelated failures still show up.
+# Add ptc_smoke_<name>_<ranks>ranks for each rank count.
 function(ptc_add_smoke_tests name)
   foreach(ranks ${PTC_TEST_RANKS})
     set(test ptc_smoke_${name}_${ranks}ranks)
     ptc_smoke_command(cmd ${ranks} ${ARGN})
     add_test(NAME ${test} COMMAND ${cmd})
     ptc_set_test_environment(${test} ${ranks})
-    if (NOT USE_CUDA AND "float32" IN_LIST ARGN)
-      set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION
-        "support for FLOAT32_VEC4 color channel not implemented")
-    endif()
   endforeach()
 endfunction()
 
@@ -106,7 +99,7 @@ ptc_add_smoke_tests(retype_float32_to_ufixed8
   --first-color float32 --color ufixed8 --depth)
 ptc_add_smoke_tests(retype_ufixed8_to_float32
   --first-color ufixed8 --color float32 --depth)
-# same pixel size, so this is the color type change the CPU path can run
+# same pixel size
 ptc_add_smoke_tests(retype_ufixed8_linear_to_ufixed8
   --first-color ufixed8-linear --color ufixed8)
 # no channel.color: nothing to map, but depth still composites
@@ -118,6 +111,11 @@ ptc_add_smoke_tests(unset_all_depth --unset-all --color ufixed8 --depth)
 foreach(color ${PTC_TEST_COLORS})
   ptc_add_smoke_tests(${color}_uncommitted --color ${color} --uncommitted)
 endforeach()
+
+# A color type ptc cannot composite: rendering reports an ERROR through the
+# status callback on every rank (no exception escapes anariRenderFrame) and
+# there is nothing to map.
+ptc_add_smoke_tests(unsupported_color --color float32-vec3)
 
 # Frame completion callback (ticket 06): called once per render with the ptc
 # handles, after compositing; not called once unset.

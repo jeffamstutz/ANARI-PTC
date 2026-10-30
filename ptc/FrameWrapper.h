@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 
 namespace ptc {
 
@@ -171,6 +172,17 @@ namespace ptc {
                                            : sizeof(uint32_t);
   }
 
+  /*! whether both compositors handle this color type; ANARI_UNKNOWN (no
+      color) counts, the compositor then runs on transparent black */
+  inline bool isCompositableColorType(ANARIDataType colorType)
+  {
+    return colorType == ANARI_UNKNOWN || colorType == ANARI_UFIXED8_VEC4
+        || colorType == ANARI_UFIXED8_RGBA_SRGB
+        || colorType == ANARI_FLOAT32_VEC4;
+  }
+
+  /*! throws if T's size does not match the type's; callers check the type
+      first, and PTCDevice turns any exception into an ERROR status */
   template <typename T>
   T bit_cast(ANARIDataType type, const void *mem)
   {

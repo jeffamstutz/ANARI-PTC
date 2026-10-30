@@ -20,8 +20,10 @@
 #include "anari/backend/LibraryImpl.h"
 #include "anari_library_ptc_export.h"
 // std
+#include <exception>
 #include <memory>
 #include <mutex>
+#include <string>
 
 namespace ptc {
 
@@ -34,6 +36,8 @@ struct PTCLibrary : public anari::LibraryImpl
   const char **getDeviceExtensions(const char *deviceType) override;
 
  private:
+  void reportException(const char *entryPoint) noexcept;
+
   std::mutex m_extensionsMutex;
   std::unique_ptr<ExtensionList> m_extensions; // built on first query
 };
@@ -45,27 +49,64 @@ PTCLibrary::PTCLibrary(
     : anari::LibraryImpl(lib, defaultStatusCB, statusCBPtr)
 {}
 
+// No exception may escape through the C API: report it as an ERROR through
+// the library's status callback instead. Only call from a catch block.
+void PTCLibrary::reportException(const char *entryPoint) noexcept
+{
+  try {
+    std::string msg = entryPoint;
+    try {
+      throw;
+    } catch (const std::exception &e) {
+      msg = msg + ": " + e.what();
+    } catch (...) {
+      msg += ": unknown exception";
+    }
+    if (auto cb = defaultStatusCB()) {
+      cb(defaultStatusCBUserPtr(),
+          nullptr,
+          nullptr,
+          ANARI_LIBRARY,
+          ANARI_SEVERITY_ERROR,
+          ANARI_STATUS_UNKNOWN_ERROR,
+          msg.c_str());
+    }
+  } catch (...) {
+    // reporting failed as well; there is nothing left to tell the app with
+  }
+}
+
 ANARIDevice PTCLibrary::newDevice(const char * /*subtype*/)
 {
-  return (ANARIDevice) new PTCDevice(this_library());
+  try {
+    return (ANARIDevice) new PTCDevice(this_library());
+  } catch (...) {
+    reportException("anariNewDevice");
+    return nullptr;
+  }
 }
 
 // The wrapped library's extensions for the device ptc wraps ('default'), plus
 // KHR_DATA_PARALLEL_MPI. Every ptc device subtype is the same device.
 const char **PTCLibrary::getDeviceExtensions(const char * /*deviceType*/)
 {
-  std::lock_guard<std::mutex> lock(m_extensionsMutex);
-  if (!m_extensions) {
-    const char *const *wrapped = nullptr;
-    ANARILibrary lib =
-        loadWrappedLibrary(defaultStatusCB(), defaultStatusCBUserPtr());
-    if (lib)
-      wrapped = anariGetDeviceExtensions(lib, "default");
-    m_extensions = std::make_unique<ExtensionList>(wrapped); // copies names
-    if (lib)
-      anariUnloadLibrary(lib);
+  try {
+    std::lock_guard<std::mutex> lock(m_extensionsMutex);
+    if (!m_extensions) {
+      const char *const *wrapped = nullptr;
+      ANARILibrary lib =
+          loadWrappedLibrary(defaultStatusCB(), defaultStatusCBUserPtr());
+      if (lib)
+        wrapped = anariGetDeviceExtensions(lib, "default");
+      m_extensions = std::make_unique<ExtensionList>(wrapped); // copies names
+      if (lib)
+        anariUnloadLibrary(lib);
+    }
+    return m_extensions->data();
+  } catch (...) {
+    reportException("anariGetDeviceExtensions");
+    return nullptr;
   }
-  return m_extensions->data();
 }
 
 } // namespace ptc
@@ -75,5 +116,9 @@ const char **PTCLibrary::getDeviceExtensions(const char * /*deviceType*/)
 extern "C" PTC_EXPORT ANARI_DEFINE_LIBRARY_ENTRYPOINT(
     ptc, handle, scb, scbPtr)
 {
-  return (ANARILibrary) new ptc::PTCLibrary(handle, scb, scbPtr);
+  try {
+    return (ANARILibrary) new ptc::PTCLibrary(handle, scb, scbPtr);
+  } catch (...) {
+    return nullptr; // no library yet to report through; anari reports it
+  }
 }

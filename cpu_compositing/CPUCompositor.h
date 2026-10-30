@@ -40,15 +40,22 @@ namespace ptc {
 
   struct CPUCompositor
   {
+    /*! pixel format of the color the compositor reads and writes */
+    enum class ColorFormat {
+      RGBA8,   /*!< 4x8 bit in one uint32_t, r in the low byte */
+      RGBA32F  /*!< 4 floats, r first */
+    };
+
     CPUCompositor(MPI_Comm comm);
     ~CPUCompositor();
 
-    void resize(int sx, int sy);
-    /*! out_color and out_depth should be null on all ranks > 0 */
-    void run(uint32_t *out_color,
-             float    *out_depth,
-             const uint32_t *in_color,
-             const float    *in_depth);
+    void resize(int sx, int sy, ColorFormat format);
+    /*! out_color and out_depth should be null on all ranks > 0; colors
+        are in the format given to resize() */
+    void run(void *out_color,
+             float *out_depth,
+             const void *in_color,
+             const float *in_depth);
     struct Range {
       inline Range() = default;
       inline Range(int begin, int end) : begin(begin), end(end) {}
@@ -57,20 +64,39 @@ namespace ptc {
     };
   private:
     math::int2 size { 0,0 };
-
+    ColorFormat format { ColorFormat::RGBA8 };
 
     Range rangeOfPeer(int peer);
-    
+    /*! MPI elements per pixel of color: one uint32_t or four floats */
+    int colorElementsPerPixel() const;
+    MPI_Datatype colorElementType() const;
+    /*! the local compositing stage, for the color type of 'format' */
+    template <typename PIXEL_T> void compositeMyRange();
+
+    /*! received/sent colors; only the vector matching 'format' is used */
+    struct ColorBuffer {
+      std::vector<uint32_t> rgba8;
+      std::vector<float>    rgba32f;
+      void resize(ColorFormat format, size_t numPixels);
+      void *data(ColorFormat format);
+    };
+
     struct {
       struct {
-        std::vector<uint32_t> color;
-        std::vector<float>    depth;
+        ColorBuffer        color;
+        std::vector<float> depth;
       } recvBuf;
       Range myRange;
+      // in pixels, for depth
       std::vector<int> recvOffset;
       std::vector<int> recvCount;
       std::vector<int> sendOffset;
       std::vector<int> sendCount;
+      // in MPI elements, for color
+      std::vector<int> colorRecvOffset;
+      std::vector<int> colorRecvCount;
+      std::vector<int> colorSendOffset;
+      std::vector<int> colorSendCount;
     } p2p;
     struct {
       struct {
@@ -78,11 +104,10 @@ namespace ptc {
         std::vector<int> recvCount;
       } rank0;
       struct {
-        int sendOffset;
         int sendCount;
         struct {
-          std::vector<uint32_t> color;
-          std::vector<float>    depth;
+          ColorBuffer        color;
+          std::vector<float> depth;
         } sendBuf;
       } anyRank;
     } finalGather;

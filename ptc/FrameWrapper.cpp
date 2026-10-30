@@ -17,6 +17,7 @@
 #include "FrameWrapper.h"
 // std
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 // anari
@@ -259,6 +260,14 @@ void FrameWrapper::updateBuffers()
     return;
 
   freeBuffers();
+  if (!isCompositableColorType(colorType)) {
+    // the same on every rank (all see the same commits), so no rank is left
+    // waiting in the compositor's collectives
+    throw std::runtime_error(std::string("cannot composite 'channel.color' "
+                                         "of type ")
+        + anari::toString(colorType)
+        + ": supported are UFIXED8_VEC4, UFIXED8_RGBA_SRGB and FLOAT32_VEC4");
+  }
   m_bufferSize = size;
   m_bufferColorType = colorType;
 
