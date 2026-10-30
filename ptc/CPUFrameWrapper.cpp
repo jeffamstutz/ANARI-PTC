@@ -44,7 +44,7 @@ namespace ptc {
   
   void CPUFrameWrapper::updateSize()
   {
-    if (m_newSize == m_currentSize)
+    if (m_newSize == m_currentSize && m_newColorType == m_currentColorType)
       return;
     FrameWrapper::updateSize();
 
@@ -59,12 +59,7 @@ namespace ptc {
         ("support for FLOAT32_VEC4 color channel not implemented");
     }
 
-    const auto &size = m_currentSize;
-
-    compositor.resize(size.x, size.y);
-
-    m_color.resize(size.x*size.y);
-    m_depth.resize(size.x*size.y);
+    compositor.resize(m_currentSize.x, m_currentSize.y);
   }
 
   void CPUFrameWrapper::composite()
@@ -79,9 +74,7 @@ namespace ptc {
       = (const uint32_t *)anariMapFrame(m_device, m_frame, "channel.color",
                                         &size.x, &size.y, &ptType);
 
-    compositor.run((uint32_t*)m_color.data(),
-                   (float *)m_depth.data(),
-                   color,depth);
+    compositor.run((uint32_t *)m_color, m_depth, color, depth);
 
     anariUnmapFrame(m_device, m_frame, "channel.depth");
     anariUnmapFrame(m_device, m_frame, "channel.color");
