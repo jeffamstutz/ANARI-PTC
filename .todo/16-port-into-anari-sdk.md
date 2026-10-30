@@ -5,6 +5,7 @@
 - the `mpiCommunicator` convention
 - compositing semantics: fragments sorted by depth, then premultiplied "over" with composited alpha, matching helide and VisRTX (see followups/08)
 - that each rank should render with a transparent background
+- that apps must release frames before releasing the ptc device. Releasing the device first is unsupported: it leads to a use-after-free and teardown after `MPI_Finalize` (decided 2026-10-30, followups/01 item 2)
 
 **Blocked by:** 15 (Upstream scope decisions), 03 (Device reports KHR_DATA_PARALLEL_MPI), 04 (Composited depth channel), 05 (Frame parameter tracking), 06 (Frame completion callback), 07 (Honor mpiCommunicator)
 

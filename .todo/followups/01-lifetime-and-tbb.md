@@ -66,3 +66,10 @@ severity: non-blocking
   KHR_DATA_PARALLEL_MPI extension (ticket 03). The render checks pass.
 - `CPUFrameWrapper::updateSize` duplicates the base class's size/type
   early-out check. This is cosmetic.
+
+## Resolution (2026-10-30, with the maintainer)
+
+- **Item 1:** accepted as landed.
+- **Item 2:** documented only. Apps must release frames before the device, and 16's README list now says so. No change to ticket 11.
+- **Item 3:** recorded as input on ticket 15's TBB item. No code change.
+- **Item 4:** superseded. 03 fixed the extension exit code, and 05 replaced `updateSize` with `allocate()`.
