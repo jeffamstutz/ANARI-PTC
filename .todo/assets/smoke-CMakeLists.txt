@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.17)
+project(ptc_smoke CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(anari REQUIRED)
+find_package(MPI REQUIRED)
+add_executable(ptcSmoke smoke.cpp)
+target_link_libraries(ptcSmoke anari::anari MPI::MPI_CXX)
