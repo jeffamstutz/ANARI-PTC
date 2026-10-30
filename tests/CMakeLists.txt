@@ -127,6 +127,15 @@ foreach(color ufixed8 ufixed8-linear float32)
   ptc_add_smoke_tests(${color}_opaque --color ${color} --background opaque)
 endforeach()
 
+# ID channels (ticket 10): each pixel's primitiveId/objectId/instanceId is the
+# nearest fragment's. Also with no color, with ids enabled or disabled between
+# frames, and after unset-all (ids_split is below). Every test checks
+# that channels ptc does not composite (normal, albedo) are refused.
+ptc_add_smoke_tests(ids --color ufixed8 --ids)
+ptc_add_smoke_tests(nocolor_ids --color none --ids)
+ptc_add_smoke_tests(ids_resize --color float32 --resize --ids)
+ptc_add_smoke_tests(ids_unset_all --color ufixed8 --unset-all --ids)
+
 # A color type ptc cannot composite: rendering reports an ERROR through the
 # status callback on every rank (no exception escapes anariRenderFrame) and
 # there is nothing to map.
@@ -162,6 +171,9 @@ ptc_add_smoke_tests(split_to_interleaved --first-comm split
 # each half blends its own ranks' backgrounds
 ptc_add_smoke_tests(ufixed8_blend_split --color ufixed8 --background blend
   --comm split ${PTC_SPLIT_RANKS})
+# each half composites its own ids
+ptc_add_smoke_tests(ids_split --color ufixed8 --comm split --ids
+  ${PTC_SPLIT_RANKS})
 
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.

@@ -16,6 +16,8 @@
 
 #include "FrameWrapper.h"
 // std
+#include <climits>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -25,6 +27,52 @@
 #include <anari/anari_cpp.hpp>
 
 namespace ptc {
+
+// Helper functions ///////////////////////////////////////////////////////////
+
+namespace {
+
+/*! index of 'name' in ID_CHANNELS, or -1 */
+int idChannelIndex(std::string_view name)
+{
+  for (size_t i = 0; i < NUM_ID_CHANNELS; i++) {
+    if (name == ID_CHANNELS[i])
+      return int(i);
+  }
+  return -1;
+}
+
+// compositeIds() reduces one record of 32-bit words per pixel:
+// [depth bits, rank, id of each enabled channel...]
+constexpr int ID_RECORD_HEADER = 2;
+
+float recordDepth(const uint32_t *record)
+{
+  float depth;
+  std::memcpy(&depth, record, sizeof(depth));
+  // NaN never wins over a hit
+  return std::isnan(depth) ? INFINITY : depth;
+}
+
+/*! MPI_Op: keeps the nearer of each pair of records, the lower rank's at
+    equal depth (as the compositors order equal-depth fragments), which
+    makes it commutative */
+void nearestRecord(void *in, void *inout, int *len, MPI_Datatype *type)
+{
+  int bytes = 0;
+  MPI_Type_size(*type, &bytes);
+  const size_t words = size_t(bytes) / sizeof(uint32_t);
+  auto *a = (const uint32_t *)in;
+  auto *b = (uint32_t *)inout;
+  for (int i = 0; i < *len; i++, a += words, b += words) {
+    const float da = recordDepth(a);
+    const float db = recordDepth(b);
+    if (da < db || (da == db && a[1] < b[1]))
+      std::memcpy(b, a, bytes);
+  }
+}
+
+} // namespace
 
 // FrameWrapper definitions ///////////////////////////////////////////////////
 
@@ -108,6 +156,10 @@ void FrameWrapper::setParameter(
         type == ANARI_VOID_POINTER ? (const MPI_Comm *)mem : nullptr;
     m_pendingCommChanged = true;
     return;
+  } else if (const int i = idChannelIndex(name); i >= 0) {
+    // forwarded below: the wrapped frame renders the ids ptc composites
+    m_pending.idEnabled[i] = type == ANARI_DATA_TYPE
+        && bit_cast<ANARIDataType>(type, mem) == ANARI_UINT32;
   }
 
   anariSetParameter(m_device, m_frame, _name, type, mem);
@@ -134,7 +186,8 @@ void FrameWrapper::unsetParameter(const char *_name)
     m_pendingComm = nullptr;
     m_pendingCommChanged = true;
     return;
-  }
+  } else if (const int i = idChannelIndex(name); i >= 0)
+    m_pending.idEnabled[i] = false;
   anariUnsetParameter(m_device, m_frame, _name);
 }
 
@@ -299,8 +352,25 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
               "with a non-empty 'size'"
             : "cannot map 'channel.depth': the frame was rendered without "
               "its 'channel.depth' parameter set to ANARI_FLOAT32");
-  } else
-    std::cout << "unsupported mapping channel " << _channel << std::endl;
+  } else if (const int i = idChannelIndex(channel); i >= 0) {
+    if (m_renderedIdEnabled[i] && !m_ids[i].empty()) {
+      *pixelType = ANARI_UINT32;
+      return m_ids[i].data();
+    }
+    const std::string msg = "cannot map '" + std::string(channel) + "': "
+        + (m_renderedIdEnabled[i]
+                ? "the frame has not been rendered with a non-empty 'size'"
+                : "the frame was rendered without its '" + std::string(channel)
+                    + "' parameter set to ANARI_UINT32");
+    m_reportStatus(ANARI_SEVERITY_WARNING, msg.c_str());
+  } else {
+    // e.g. channel.normal and channel.albedo: they can't be blended, and
+    // ptc doesn't composite them
+    const std::string msg = "cannot map '" + std::string(channel)
+        + "': ptc composites only channel.color, channel.depth, "
+          "channel.primitiveId, channel.objectId and channel.instanceId";
+    m_reportStatus(ANARI_SEVERITY_WARNING, msg.c_str());
+  }
 
   *width = 0;
   *height = 0;
@@ -370,6 +440,8 @@ void FrameWrapper::freeBuffers()
   free(m_depth);
   m_color = nullptr;
   m_depth = nullptr;
+  for (auto &ids : m_ids)
+    ids = {};
   m_bufferSize = {0u, 0u};
   m_bufferColorType = ANARI_UNKNOWN;
 }
@@ -378,17 +450,95 @@ void FrameWrapper::renderFrame()
 {
   updateBuffers();
   m_renderedDepthEnabled = m_committed.depthEnabled;
+  m_renderedIdEnabled = m_committed.idEnabled;
   anariRenderFrame(m_device, m_frame);
   anariFrameReady(m_device, m_frame, ANARI_WAIT);
   // Every rank sees the same commits, so all of them skip or composite.
-  if (m_bufferSize.x != 0 && m_bufferSize.y != 0)
+  if (m_bufferSize.x != 0 && m_bufferSize.y != 0) {
     composite();
+    compositeIds();
+  }
   // The composited frame is ready (rendering is synchronous), so the
   // continuation has run before any anariFrameReady() returns.
   if (auto callback = m_committed.completionCallback) {
     callback(m_committed.completionCallbackUserData,
         m_ptcDevice,
         (ANARIFrame)this);
+  }
+}
+
+void FrameWrapper::compositeIds()
+{
+  std::vector<size_t> channels;
+  for (size_t i = 0; i < NUM_ID_CHANNELS; i++) {
+    if (m_renderedIdEnabled[i])
+      channels.push_back(i);
+    else
+      m_ids[i] = {};
+  }
+  if (channels.empty())
+    return;
+
+  // the same on every rank, so none is left waiting in the reduction
+  const size_t numPixels = size_t(m_bufferSize.x) * m_bufferSize.y;
+  if (numPixels > size_t(INT_MAX)) {
+    throw std::runtime_error(
+        "cannot composite id channels: the frame has too many pixels");
+  }
+  const size_t words = ID_RECORD_HEADER + channels.size();
+  std::vector<uint32_t> records(numPixels * words);
+
+  uint32_t width = 0, height = 0;
+  ANARIDataType type = ANARI_UNKNOWN;
+  auto *depth = (const float *)anariMapFrame(
+      m_device, m_frame, "channel.depth", &width, &height, &type);
+  for (size_t p = 0; p < numPixels; p++) {
+    uint32_t *record = records.data() + p * words;
+    const float z = depth ? depth[p] : INFINITY;
+    std::memcpy(&record[0], &z, sizeof(z));
+    record[1] = uint32_t(m_rank);
+  }
+  anariUnmapFrame(m_device, m_frame, "channel.depth");
+
+  for (size_t c = 0; c < channels.size(); c++) {
+    const char *name = ID_CHANNELS[channels[c]];
+    auto *ids = (const uint32_t *)anariMapFrame(
+        m_device, m_frame, name, &width, &height, &type);
+    // still take part in the reduction, with no hits ('~0u')
+    const bool valid = ids && type == ANARI_UINT32
+        && size_t(width) * height == numPixels;
+    if (!valid) {
+      const std::string msg = std::string("the wrapped frame did not render '")
+          + name + "' as ANARI_UINT32; compositing it as no hits";
+      m_reportStatus(ANARI_SEVERITY_WARNING, msg.c_str());
+    }
+    for (size_t p = 0; p < numPixels; p++)
+      records[p * words + ID_RECORD_HEADER + c] = valid ? ids[p] : ~0u;
+    anariUnmapFrame(m_device, m_frame, name);
+  }
+
+  MPI_Datatype recordType;
+  MPI_Type_contiguous(int(words), MPI_UINT32_T, &recordType);
+  MPI_Type_commit(&recordType);
+  MPI_Op op;
+  MPI_Op_create(&nearestRecord, 1, &op);
+  // on rank 0, in place: 'records' becomes the nearest record of every rank
+  MPI_Reduce(m_rank == 0 ? MPI_IN_PLACE : records.data(),
+      m_rank == 0 ? records.data() : nullptr,
+      int(numPixels),
+      recordType,
+      op,
+      0,
+      m_comm);
+  MPI_Op_free(&op);
+  MPI_Type_free(&recordType);
+
+  // on other ranks, this rank's own ids (the contents are undefined there)
+  for (size_t c = 0; c < channels.size(); c++) {
+    auto &ids = m_ids[channels[c]];
+    ids.resize(numPixels);
+    for (size_t p = 0; p < numPixels; p++)
+      ids[p] = records[p * words + ID_RECORD_HEADER + c];
   }
 }
 

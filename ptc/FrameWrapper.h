@@ -24,11 +24,13 @@
 #include <helium/utility/IntrusivePtr.h>
 // std
 #include <mpi.h>
+#include <array>
 #include <functional>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <vector>
 
 namespace ptc {
 
@@ -42,6 +44,14 @@ namespace ptc {
 #endif
 
 
+
+  /*! Frame channels ptc composites by taking the value of each pixel's
+      nearest fragment (equal depth: the lower rank's), since ids don't
+      blend. Each is UINT32 and requested from the wrapped frame only when
+      the app enables it. */
+  constexpr const char *ID_CHANNELS[] = {
+      "channel.primitiveId", "channel.objectId", "channel.instanceId"};
+  constexpr size_t NUM_ID_CHANNELS = sizeof(ID_CHANNELS) / sizeof(ID_CHANNELS[0]);
 
   using FrameWrapperNotificationHandler = std::function<void(const void *)>;
   using FrameWrapperStatusHandler =
@@ -109,6 +119,9 @@ namespace ptc {
       // composited depth may be mapped. The wrapped frame always renders
       // depth, since compositing needs it.
       bool depthEnabled{false};
+      // Whether the app enabled each of ID_CHANNELS (as ANARI_UINT32). Unlike
+      // depth, they are forwarded: the wrapped frame renders them only then.
+      std::array<bool, NUM_ID_CHANNELS> idEnabled{};
       // The app's frame completion callback. Never forwarded: the wrapped
       // frame completes before compositing, and would pass its own handles.
       ANARIFrameCompletionCallback completionCallback{nullptr};
@@ -126,6 +139,10 @@ namespace ptc {
     /*! composites the wrapped frame's channels into m_color and m_depth;
         only called with a non-empty size */
     virtual void composite() = 0;
+    /*! composites the enabled ID_CHANNELS into m_ids, on the host and for
+        either compositor: one reduction over m_comm keeps each pixel's
+        nearest fragment; only called with a non-empty size */
+    void compositeIds();
     /*! frees what allocate() allocated */
     virtual void cleanup() = 0;
     /*! creates the compositor, over 'comm' (owned by this FrameWrapper);
@@ -177,6 +194,10 @@ namespace ptc {
     // m_committed.depthEnabled at the last render: whether its composited
     // depth may be mapped
     bool m_renderedDepthEnabled{false};
+    // m_committed.idEnabled at the last render, likewise
+    std::array<bool, NUM_ID_CHANNELS> m_renderedIdEnabled{};
+    // composited ID_CHANNELS; empty unless enabled at the last render
+    std::array<std::vector<uint32_t>, NUM_ID_CHANNELS> m_ids;
 
     float *m_depth = nullptr;
     void  *m_color = nullptr;

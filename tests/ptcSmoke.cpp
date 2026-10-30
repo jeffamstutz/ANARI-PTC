@@ -5,13 +5,15 @@
 // rank 0 checks that every sphere shows up in the composited image. Every rank
 // but the last also renders a hidden sphere straight behind the last rank's,
 // so that pixel has hits from all ranks and the nearest one must win.
+// Each rank's surface has id 100 + its world rank, and the visible sphere is
+// primitive 0 of its geometry, the hidden one primitive 1.
 //
 // Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
 // required ANARI 1.1 device properties. Ranks other than the compositing root
 // map the frame too: the contents are undefined there, but it must not crash.
 //
 // Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|float32-vec3|none]
-//                 [--depth]
+//                 [--depth] [--ids]
 //                 [--resize] [--first-color <type>] [--unset-all]
 //                 [--uncommitted] [--callback] [--invert-check]
 //                 [--comm <comm>] [--first-comm <comm>]
@@ -26,6 +28,12 @@
 //                     mapping color must be refused
 //   --depth           enable channel.depth and check the composited depth;
 //                     without it, check that mapping depth is refused
+//   --ids             enable channel.primitiveId, channel.objectId and
+//                     channel.instanceId (UINT32) and check that each pixel
+//                     holds the nearest fragment's ids; without it, check
+//                     that mapping them is refused. channel.normal and
+//                     channel.albedo, which ptc does not composite, must
+//                     always be refused.
 //   --resize          render a first frame at half the size, then resize
 //   --first-color     render a first frame with this color type, then change
 //                     it to --color
@@ -71,8 +79,8 @@
 // With --resize, --first-color, --first-comm or --unset-all, a first frame is
 // rendered and its color map is checked, then the frame's parameters change and
 // the full checks run on the second frame. The first frame also has the
-// opposite channel.depth setting, so depth is enabled or disabled between
-// frames too.
+// opposite channel.depth and id channel settings, so those are enabled or
+// disabled between frames too.
 // Without --unset-all, parameters that go away are unset one by one.
 //
 // Every rank exits non-zero if any rank recorded a failure.
@@ -133,6 +141,7 @@ struct FrameState
   uint2 size;
   ANARIDataType color{ANARI_UNKNOWN};
   bool depth{false};
+  bool ids{false};
   bool callback{false};
   const Layout *layout{nullptr};
 };
@@ -141,6 +150,7 @@ struct Options
 {
   ANARIDataType colorType{ANARI_UFIXED8_RGBA_SRGB};
   bool depth{false};
+  bool ids{false};
   bool resize{false};
   std::optional<ANARIDataType> firstColorType;
   bool unsetAll{false};
@@ -167,12 +177,25 @@ const int kNumColors = int(sizeof(kColors) / sizeof(kColors[0]));
 // looking down -z, so the depth at a sphere's center pixel is 4.7.
 const float kSphereRadius = 0.3f;
 const float kCameraZ = 5.f;
+// surface id (objectId) of the sphere of the rank with this world rank
+uint32_t surfaceId(int worldRank)
+{
+  return 100u + uint32_t(worldRank);
+}
+
+// Channels ptc composites by taking the nearest fragment's value (UINT32)
+const char *const kIdChannels[] = {
+    "channel.primitiveId", "channel.objectId", "channel.instanceId"};
+// Channels ptc does not composite: mapping them is always refused
+const char *const kUnsupportedChannels[] = {"channel.normal", "channel.albedo"};
 
 // Status messages at WARNING or worse that mention channel.depth/color
 int g_depthWarnings = 0;
 int g_colorWarnings = 0;
 // Status messages at ERROR or worse that mention channel.color
 int g_colorErrors = 0;
+// The last status message at WARNING or worse
+std::string g_lastWarning;
 
 void statusFunc(const void *,
     ANARIDevice,
@@ -186,6 +209,7 @@ void statusFunc(const void *,
     fprintf(stderr, "[anari] %s\n", msg);
     g_depthWarnings += std::string(msg).find("channel.depth") != std::string::npos;
     g_colorWarnings += std::string(msg).find("channel.color") != std::string::npos;
+    g_lastWarning = msg;
   }
   if (sev <= ANARI_SEVERITY_ERROR)
     g_colorErrors += std::string(msg).find("channel.color") != std::string::npos;
@@ -269,6 +293,8 @@ bool parseArgs(int argc, char **argv, Options &opts)
       opts.firstColorType = type;
     } else if (arg == "--depth")
       opts.depth = true;
+    else if (arg == "--ids")
+      opts.ids = true;
     else if (arg == "--resize")
       opts.resize = true;
     else if (arg == "--unset-all")
@@ -541,6 +567,7 @@ anari::World buildWorld(anari::Device d, const Layout &l)
   anari::setParameter(d, mat, "color", col);
   anari::commitParameters(d, mat);
   auto surf = anari::newObject<anari::Surface>(d);
+  anari::setParameter(d, surf, "id", surfaceId(l.worldRanks[rank]));
   anari::setAndReleaseParameter(d, surf, "geometry", geom);
   anari::setAndReleaseParameter(d, surf, "material", mat);
   anari::commitParameters(d, surf);
@@ -642,6 +669,10 @@ void setAllParameters(
     anari::setParameter(d, frame, "channel.color", state.color);
   if (state.depth)
     anari::setParameter(d, frame, "channel.depth", ANARI_FLOAT32);
+  if (state.ids) {
+    for (const char *channel : kIdChannels)
+      anari::setParameter(d, frame, channel, ANARI_UINT32);
+  }
   if (state.callback) {
     anari::setParameter(d,
         frame,
@@ -679,6 +710,12 @@ void changeParameters(anari::Device d,
       anari::unsetParameter(d, frame, "channel.depth");
     else if (!prev.depth)
       anari::setParameter(d, frame, "channel.depth", ANARI_FLOAT32);
+    for (const char *channel : kIdChannels) {
+      if (!next.ids)
+        anari::unsetParameter(d, frame, channel);
+      else if (!prev.ids)
+        anari::setParameter(d, frame, channel, ANARI_UINT32);
+    }
     if (next.layout->split != CommSplit::World)
       setCommunicator(d, frame, *next.layout);
     else if (prev.layout->split != CommSplit::World)
@@ -903,11 +940,108 @@ int checkDepthRefused(anari::Device d, anari::Frame frame)
   return !ok;
 }
 
+// Rank 0 only: mapping `channel` returns nothing and reports a warning that
+// names the channel through the status callback.
+int checkChannelRefused(
+    anari::Device d, anari::Frame frame, const char *channel, const char *why)
+{
+  g_lastWarning.clear();
+  auto fb = anari::map<void>(d, frame, channel);
+  const bool warned = g_lastWarning.find(channel) != std::string::npos;
+  const bool ok = !fb.data && fb.width == 0 && fb.height == 0
+      && fb.pixelType == ANARI_UNKNOWN && warned;
+  printf("%s: %s %s map refused (data=%p %ux%u type=%d, warning %s)\n",
+      ok ? "PASS" : "FAIL",
+      why,
+      channel,
+      fb.data,
+      fb.width,
+      fb.height,
+      int(fb.pixelType),
+      warned ? "reported" : "missing");
+  anari::unmap(d, frame, channel);
+  return !ok;
+}
+
+// Rank 0 of the layout only, with --ids: each pixel's ids are the nearest
+// fragment's. Each rank's sphere center is primitive 0 of that rank's surface:
+// other ranks either miss there or, behind the last rank's sphere, hit their
+// primitive 1 farther away. Where no rank hits, the ids are ~0u.
+int checkIds(anari::Device d, anari::Frame frame, const Layout &l)
+{
+  int failures = 0;
+  for (const char *channel : kIdChannels) {
+    const std::string name = channel;
+    auto fb = anari::map<uint32_t>(d, frame, channel);
+    if (!fb.data || fb.width != kImageSize.x || fb.height != kImageSize.y
+        || fb.pixelType != ANARI_UINT32) {
+      printf("FAIL: bad %s map (data=%p %ux%u type=%d)\n",
+          channel,
+          (const void *)fb.data,
+          fb.width,
+          fb.height,
+          int(fb.pixelType));
+      failures++;
+      anari::unmap(d, frame, channel);
+      continue;
+    }
+    // helide gives surfaces outside an instance no instance id
+    if (name != "channel.instanceId") {
+      for (int r = 0; r < l.size; r++) {
+        const int px = pixelX(sphereX(r, l.size));
+        const uint32_t got = fb.data[(kImageSize.y / 2) * kImageSize.x + px];
+        const uint32_t want = name == "channel.primitiveId"
+            ? 0u
+            : surfaceId(l.worldRanks[r]);
+        const bool ok = got == want;
+        printf("%s: rank %d sphere %s @ px %d = %u (want %u)\n",
+            ok ? "PASS" : "FAIL",
+            r,
+            channel,
+            px,
+            got,
+            want);
+        failures += !ok;
+      }
+    }
+    const uint32_t corner = fb.data[0];
+    const bool ok = corner == ~0u;
+    printf("%s: background %s = %u (want %u)\n",
+        ok ? "PASS" : "FAIL",
+        channel,
+        corner,
+        ~0u);
+    failures += !ok;
+    anari::unmap(d, frame, channel);
+  }
+  return failures;
+}
+
+// Rank 0 only: channels ptc does not composite are always refused, and the
+// id channels are refused unless --ids enabled them.
+int checkChannelsRefused(anari::Device d, anari::Frame frame, bool ids)
+{
+  int failures = 0;
+  for (const char *channel : kUnsupportedChannels)
+    failures += checkChannelRefused(d, frame, channel, "unsupported");
+  if (!ids) {
+    for (const char *channel : kIdChannels)
+      failures += checkChannelRefused(d, frame, channel, "unrequested");
+  }
+  return failures;
+}
+
 // Ranks other than the layout's rank 0: the spec leaves the mapped contents
 // undefined there, but mapping and reading what is returned must not crash.
 void touchNonRootMaps(anari::Device d, anari::Frame frame)
 {
-  for (const char *channel : {"channel.color", "channel.depth"}) {
+  for (const char *channel : {"channel.color",
+           "channel.depth",
+           "channel.primitiveId",
+           "channel.objectId",
+           "channel.instanceId",
+           "channel.normal",
+           "channel.albedo"}) {
     auto fb = anari::map<uint8_t>(d, frame, channel);
     volatile uint8_t sum = 0;
     if (fb.data) {
@@ -1031,8 +1165,12 @@ int main(int argc, char **argv)
   Scene scene = buildScene(d,
       buildWorld(d, opts.twoFrames() ? firstLayout : finalLayout),
       opts.background);
-  const FrameState finalState{
-      kImageSize, opts.colorType, opts.depth, opts.callback, &finalLayout};
+  const FrameState finalState{kImageSize,
+      opts.colorType,
+      opts.depth,
+      opts.ids,
+      opts.callback,
+      &finalLayout};
   auto frame = anari::newObject<anari::Frame>(d);
   g_callback = {d, frame, rank, &finalLayout, &opts};
   int renders = 0;
@@ -1041,6 +1179,7 @@ int main(int argc, char **argv)
     const FrameState first{opts.resize ? kImageSize / 2u : kImageSize,
         opts.firstColorType.value_or(opts.colorType),
         !opts.depth,
+        !opts.ids,
         opts.callback,
         &firstLayout};
     setAllParameters(d, frame, scene, first);
@@ -1100,6 +1239,9 @@ int main(int argc, char **argv)
     failures += checkBackground(d, frame, opts, finalLayout);
     failures += opts.depth ? checkDepth(d, frame, finalLayout.size)
                            : checkDepthRefused(d, frame);
+    if (opts.ids)
+      failures += checkIds(d, frame, finalLayout);
+    failures += checkChannelsRefused(d, frame, opts.ids);
   } else
     touchNonRootMaps(d, frame);
 
