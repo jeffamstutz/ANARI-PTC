@@ -6,10 +6,10 @@
 
 **Blocked by:** 08 (CPU compositor supports FLOAT32_VEC4 and is UB-free)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] sRGB input is linearized before blending and re-encoded after, on CPU and CUDA
-- [ ] Opaque single-fragment pixels round-trip unchanged (within 1 LSB)
-- [ ] Harness test with overlapping semi-transparent geometry from two ranks compares against an analytically blended expected value
-- [ ] Both paths use the premultiplied convention above: CPU drops its extra `a_f*` multiply, and CUDA outputs composited alpha instead of 1
-- [ ] The semi-transparent test runs for `FLOAT32_VEC4` and `UFIXED8_VEC4` as well as sRGB, on CPU and CUDA, against the same analytic value
+- [x] sRGB input is linearized before blending and re-encoded after, on CPU and CUDA
+- [x] Opaque single-fragment pixels round-trip unchanged (within 1 LSB)
+- [x] Harness test with overlapping semi-transparent geometry from two ranks compares against an analytically blended expected value
+- [x] Both paths use the premultiplied convention above: CPU drops its extra `a_f*` multiply, and CUDA outputs composited alpha instead of 1
+- [x] The semi-transparent test runs for `FLOAT32_VEC4` and `UFIXED8_VEC4` as well as sRGB, on CPU and CUDA, against the same analytic value
