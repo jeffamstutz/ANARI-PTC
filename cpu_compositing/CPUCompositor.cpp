@@ -252,8 +252,8 @@ namespace ptc {
     size = { sx,sy };
     this->format = format;
 
-    MPI_Barrier(mpi.comm);
-    
+    // Not collective: every rank computes the same layout on its own, and
+    // ptc has the ranks agree that all of them resized before compositing.
     Range myRange = rangeOfPeer(mpi.rank);
     int recvBufSize = myRange.size() * mpi.size;
     p2p.recvBuf.color.resize(format, recvBufSize);
@@ -294,7 +294,6 @@ namespace ptc {
         sendOffset += p2p.sendCount[peer];
       }
     }
-    MPI_Barrier(mpi.comm);
   }
 
   /*! blends each of my pixels' fragments (one per rank, from the p2p

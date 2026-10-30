@@ -88,6 +88,21 @@ free its communicator after the commit.
   communicator is committed.
 - Releasing a frame is collective over its communicator: every rank of it
   must release the frame.
+- If rendering or preparing a frame fails on some ranks only (e.g. out of
+  memory), the ranks agree on that before compositing: every rank skips
+  compositing and reports an error, instead of the others hanging. The
+  same holds for creating the compositor when a communicator is committed.
+
+## MPI initialization and device lifetime
+
+If the app has initialized MPI before a ptc device first needs it, ptc
+uses it and never finalizes it. Otherwise ptc calls `MPI_Init` itself, and
+keeps MPI initialized until the last ptc device is released, which then
+calls `MPI_Finalize`. MPI cannot be initialized again after that, so an app
+that creates ptc devices one after another should initialize MPI itself.
+
+Releasing a device is collective: every rank must release its devices in
+the same order. Release a device's frames before the device.
 
 # Contributors
 

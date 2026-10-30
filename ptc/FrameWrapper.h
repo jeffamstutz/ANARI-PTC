@@ -135,15 +135,33 @@ namespace ptc {
     /*! frees all buffers; afterwards they are empty, for no color type */
     void freeBuffers();
     /*! allocates the subclass's resources for m_bufferSize and
-        m_bufferColorType; only called with a non-empty size */
+        m_bufferColorType; only called with a non-empty size. Not
+        collective: renderFrame() has the ranks agree afterwards. */
     virtual void allocate() = 0;
-    /*! composites the wrapped frame's channels into m_color and m_depth;
-        only called with a non-empty size */
+    /*! the local half of compositing: everything that may fail on this
+        rank alone (e.g. uploading to the GPU) happens here, before the ranks
+        agree to composite. 'color' (null without a color type) and 'depth'
+        are the wrapped frame's channels, mapped until composite() returns.
+        Not collective; only called with a non-empty size. */
+    virtual void stage(const void *color, const float *depth) = 0;
+    /*! the collective half: composites what stage() staged into m_color
+        and m_depth; collective over m_comm */
     virtual void composite() = 0;
+    /*! the local half of compositeIds(): gathers this rank's record of
+        each pixel's depth, rank and enabled ID_CHANNELS into m_idRecords */
+    void stageIds(const float *depth);
     /*! composites the enabled ID_CHANNELS into m_ids, on the host and for
         either compositor: one reduction over m_comm keeps each pixel's
-        nearest fragment; only called with a non-empty size */
+        nearest record; collective over m_comm */
     void compositeIds();
+    /*! whether 'ok' is true on every rank of 'comm'; collective over
+        'comm'. Ranks call it before a collective step that may have failed
+        on some of them only, so that all of them skip that step (and
+        report an error) instead of the others hanging in it. */
+    static bool agree(MPI_Comm comm, bool ok);
+    /*! maps a channel of the wrapped frame; throws unless it is 'type' and
+        m_bufferSize */
+    const void *mapWrapped(const char *channel, ANARIDataType type);
     /*! frees what allocate() allocated */
     virtual void cleanup() = 0;
     /*! creates the compositor, over 'comm' (owned by this FrameWrapper);
@@ -199,6 +217,10 @@ namespace ptc {
     std::array<bool, NUM_ID_CHANNELS> m_renderedIdEnabled{};
     // composited ID_CHANNELS; empty unless enabled at the last render
     std::array<std::vector<uint32_t>, NUM_ID_CHANNELS> m_ids;
+    // what stageIds() staged for compositeIds(): the enabled ID_CHANNELS
+    // (indices) and one record per pixel
+    std::vector<size_t> m_idChannels;
+    std::vector<uint32_t> m_idRecords;
 
     float *m_depth = nullptr;
     void  *m_color = nullptr;

@@ -18,6 +18,7 @@
 //                 [--depth] [--ids]
 //                 [--resize] [--first-color <type>] [--unset-all]
 //                 [--uncommitted] [--callback] [--invert-check]
+//                 [--fail-last-rank]
 //                 [--comm <comm>] [--first-comm <comm>]
 //                 [--background none|blend|opaque]
 //                 [--expect-library <path>]
@@ -53,6 +54,12 @@
 //                     and one more render must not call it.
 //   --invert-check    expect the wrong colors, so the pixel check must fail;
 //                     used to test the harness's failure path
+//   --fail-last-rank  the last rank commits 'float32-vec3' color (which ptc
+//                     cannot composite) for the final frame, the others
+//                     --color: rendering fails on that rank only, yet every
+//                     rank must report an ERROR through the status callback
+//                     and return (none may hang in the compositor), and the
+//                     color map is refused
 //   --comm            communicator the frame composites over (default
 //                     world): 'world' leaves mpiCommunicator unset (so
 //                     MPI_COMM_WORLD); 'split' splits MPI_COMM_WORLD into
@@ -160,6 +167,7 @@ struct Options
   bool uncommitted{false};
   bool callback{false};
   bool invertCheck{false};
+  bool failLastRank{false};
   CommSplit comm{CommSplit::World};
   std::optional<CommSplit> firstComm;
   Background background{Background::None};
@@ -200,6 +208,8 @@ int g_depthWarnings = 0;
 int g_colorWarnings = 0;
 // Status messages at ERROR or worse that mention channel.color
 int g_colorErrors = 0;
+// Status messages at ERROR or worse
+int g_errors = 0;
 // The last status message at WARNING or worse
 std::string g_lastWarning;
 
@@ -217,8 +227,10 @@ void statusFunc(const void *,
     g_colorWarnings += std::string(msg).find("channel.color") != std::string::npos;
     g_lastWarning = msg;
   }
-  if (sev <= ANARI_SEVERITY_ERROR)
+  if (sev <= ANARI_SEVERITY_ERROR) {
     g_colorErrors += std::string(msg).find("channel.color") != std::string::npos;
+    g_errors++;
+  }
 }
 
 bool parseColorType(const std::string &type, ANARIDataType &out)
@@ -311,6 +323,8 @@ bool parseArgs(int argc, char **argv, Options &opts)
       opts.callback = true;
     else if (arg == "--invert-check")
       opts.invertCheck = true;
+    else if (arg == "--fail-last-rank")
+      opts.failLastRank = true;
     else if (arg == "--comm") {
       if (!parseComm(argv[++i], opts.comm))
         return false;
@@ -1162,6 +1176,11 @@ int main(int argc, char **argv)
 
   int failures = 0;
 
+  // ranks other than the last keep --color, and expect the render to fail
+  // because the last one failed
+  if (opts.failLastRank && rank == size - 1)
+    opts.colorType = ANARI_FLOAT32_VEC3;
+
   auto lib = anari::loadLibrary("ptc", statusFunc);
   if (!lib) {
     printf("FAIL: rank %d could not load the ptc library\n", rank);
@@ -1246,6 +1265,7 @@ int main(int argc, char **argv)
   g_callback.rendering = &finalState;
   g_callback.finalFrame = true;
   const int errorsBefore = g_colorErrors;
+  const int anyErrorsBefore = g_errors;
   anari::render(d, frame);
   anari::wait(d, frame);
   renders++;
@@ -1256,16 +1276,25 @@ int main(int argc, char **argv)
     Checker c{rank};
     const bool wantError = !compositable(opts.colorType);
     const bool gotError = g_colorErrors > errorsBefore;
-    c.expect(wantError == gotError,
-        wantError ? "no ERROR about channel.color reported for an "
-                    "uncompositable color type"
-                  : "unexpected ERROR about channel.color reported");
+    if (opts.failLastRank && !wantError) {
+      c.expect(g_errors > anyErrorsBefore,
+          "no ERROR reported after the last rank failed to render");
+    } else {
+      c.expect(wantError == gotError,
+          wantError ? "no ERROR about channel.color reported for an "
+                      "uncompositable color type"
+                    : "unexpected ERROR about channel.color reported");
+    }
     if (wantError && !c.failures)
       printf("PASS: rank %d: render error reported\n", rank);
     failures += c.failures;
   }
 
-  if (finalLayout.rank == 0) {
+  if (opts.failLastRank) {
+    // nothing was composited, so there is nothing to map
+    if (finalLayout.rank == 0)
+      failures += checkColorRefused(d, frame, "after a failure on one rank");
+  } else if (finalLayout.rank == 0) {
     failures += checkColor(d, frame, opts, finalLayout);
     failures += checkBackground(d, frame, opts, finalLayout);
     failures += opts.depth ? checkDepth(d, frame, finalLayout.size)

@@ -214,6 +214,9 @@ namespace ptc {
   ~PTCDevice() override;
 
   void initDevice();
+  /*! initializes MPI privately unless it is already; if ptc owns MPI, this
+      device then keeps it initialized until it is destroyed */
+  void acquireMpi();
 
  private:
   void deviceCommitParameters();
@@ -245,7 +248,14 @@ namespace ptc {
   std::unique_ptr<ExtensionList> m_extensions; // built on first query
   FrameParameterLists m_frameParameterLists;
 
-  static int s_numMpiPTCDevices;
+  // MPI lifetime. If the app hasn't initialized MPI when the first device
+  // initializes, ptc does it privately. Every device initialized while that
+  // private MPI is alive holds it (m_holdsPrivateMpi), and the last of them
+  // to be destroyed finalizes it. MPI the app initialized is never
+  // finalized by ptc.
+  bool m_holdsPrivateMpi{false};
+  static std::mutex s_mpiMutex;
+  static int s_numPrivateMpiHolders;
   static bool s_mpiInitializedPrivately;
 };
 

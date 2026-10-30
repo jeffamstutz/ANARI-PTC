@@ -55,24 +55,18 @@ namespace ptc {
       m_noColor.assign(size_t(m_bufferSize.x) * m_bufferSize.y, 0u);
   }
 
+  void CPUFrameWrapper::stage(const void *color, const float *depth)
+  {
+    // the compositor reads the wrapped frame's channels in place
+    m_inColor = color ? color : m_noColor.data();
+    m_inDepth = depth;
+  }
+
   void CPUFrameWrapper::composite()
   {
-    const bool hasColor = m_bufferColorType != ANARI_UNKNOWN;
-    anari::math::uint2 size;
-    ANARIDataType ptType = ANARI_UNKNOWN;
-    const float *depth
-      = (const float *)anariMapFrame(m_device, m_frame, "channel.depth",
-                                     &size.x, &size.y, &ptType);
-    const void *color = hasColor
-      ? anariMapFrame(m_device, m_frame, "channel.color",
-                      &size.x, &size.y, &ptType)
-      : m_noColor.data();
-
-    compositor->run(m_color, m_depth, color, depth);
-
-    anariUnmapFrame(m_device, m_frame, "channel.depth");
-    if (hasColor)
-      anariUnmapFrame(m_device, m_frame, "channel.color");
+    compositor->run(m_color, m_depth, m_inColor, m_inDepth);
+    m_inColor = nullptr;
+    m_inDepth = nullptr;
   }
 
   void CPUFrameWrapper::cleanup()

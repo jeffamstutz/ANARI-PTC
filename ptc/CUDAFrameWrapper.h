@@ -35,6 +35,7 @@ namespace ptc {
     
     // void renderFrame() override;
     void allocate() override;
+    void stage(const void *color, const float *depth) override;
     void composite() override;
     void cleanup() override;
     void createCompositor(MPI_Comm comm) override;

@@ -110,30 +110,17 @@ namespace ptc {
     CUDA_SYNC_CHECK();
   }
 
-  void CUDAFrameWrapper::composite()
+  void CUDAFrameWrapper::stage(const void *color, const float *depth)
   {
-    const bool hasColor = m_bufferColorType != ANARI_UNKNOWN;
     const auto &size = m_bufferSize;
     const size_t numPixels = size_t(size.x) * size.y;
     const size_t colorSize = colorPixelSize(m_bufferColorType);
 
-    anari::math::uint2 mappedSize;
-    ANARIDataType ptType = ANARI_UNKNOWN;
-    const float *depth
-      = (const float *)anariMapFrame(m_device, m_frame, "channel.depth",
-                                     &mappedSize.x, &mappedSize.y, &ptType);
-    cudaMemcpy
-      (d_depth, depth, numPixels * sizeof(float),
-       cudaMemcpyDefault);
-    if (hasColor) {
-      const void *color
-        = (const void *)anariMapFrame(m_device, m_frame, "channel.color",
-                                      &mappedSize.x, &mappedSize.y, &ptType);
-      cudaMemcpy
-        (d_color_in, color, numPixels * colorSize,
-         cudaMemcpyDefault);
-    }
-    
+    cudaMemcpy(d_depth, depth, numPixels * sizeof(float), cudaMemcpyDefault);
+    // without color, d_color_in stays the transparent black allocate() set
+    if (color)
+      cudaMemcpy(d_color_in, color, numPixels * colorSize, cudaMemcpyDefault);
+
     auto ngx = dc::divRoundUp(size.x, 16);
     auto ngy = dc::divRoundUp(size.y, 16);
 
@@ -144,6 +131,16 @@ namespace ptc {
        d_depth,
        d_color_in,
        m_bufferColorType);
+    // CUDA errors so far surface here, before the ranks agree to composite
+    CUDA_SYNC_CHECK();
+  }
+
+  void CUDAFrameWrapper::composite()
+  {
+    const auto &size = m_bufferSize;
+    const size_t numPixels = size_t(size.x) * size.y;
+    const size_t colorSize = colorPixelSize(m_bufferColorType);
+
     auto format = dc::ColorFormat::RGBA8;
     if (m_bufferColorType == ANARI_FLOAT32_VEC4)
       format = dc::ColorFormat::RGBA32F;
@@ -162,10 +159,6 @@ namespace ptc {
                cudaMemcpyDefault);
 
     CUDA_SYNC_CHECK();
-
-    anariUnmapFrame(m_device, m_frame, "channel.depth");
-    if (hasColor)
-      anariUnmapFrame(m_device, m_frame, "channel.color");
   }
 
   void CUDAFrameWrapper::createCompositor(MPI_Comm comm)

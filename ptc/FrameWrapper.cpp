@@ -19,6 +19,7 @@
 #include <climits>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -292,14 +293,34 @@ void FrameWrapper::setCommunicator(MPI_Comm comm)
 
   MPI_Comm dup = MPI_COMM_NULL;
   MPI_Comm_dup(comm, &dup);
+  std::exception_ptr failure;
   try {
     createCompositor(dup);
   } catch (...) {
+    failure = std::current_exception();
+  }
+  // If some ranks have no compositor, none may use this communicator: the
+  // others would wait for them in every render.
+  if (!agree(dup, !failure)) {
+    destroyCompositor();
     MPI_Comm_free(&dup);
-    throw;
+    if (failure)
+      std::rethrow_exception(failure);
+    throw std::runtime_error(
+        "another rank failed to create its compositor for this "
+        "'mpiCommunicator': the frame cannot be rendered until a "
+        "communicator is committed again");
   }
   m_comm = dup;
   MPI_Comm_rank(m_comm, &m_rank);
+}
+
+bool FrameWrapper::agree(MPI_Comm comm, bool ok)
+{
+  int mine = ok ? 1 : 0;
+  int all = 0;
+  MPI_Allreduce(&mine, &all, 1, MPI_INT, MPI_MIN, comm);
+  return all != 0;
 }
 
 void FrameWrapper::release()
@@ -405,9 +426,7 @@ void FrameWrapper::updateBuffers()
   freeBuffers();
   m_reallocate = false;
   if (!isCompositableColorType(colorType)) {
-    // the same on every rank (all see the same commits), so no rank is left
-    // waiting in the compositor's collectives. Failures on only some ranks
-    // (e.g. out of memory) are reported, but the other ranks still hang.
+    // renderFrame() has every rank skip compositing if any rank throws
     throw std::runtime_error(std::string("cannot composite 'channel.color' "
                                          "of type ")
         + anari::toString(colorType)
@@ -444,21 +463,72 @@ void FrameWrapper::freeBuffers()
   m_depth = nullptr;
   for (auto &ids : m_ids)
     ids = {};
+  m_idChannels.clear();
+  m_idRecords = {};
   m_bufferSize = {0u, 0u};
   m_bufferColorType = ANARI_UNKNOWN;
 }
 
 void FrameWrapper::renderFrame()
 {
-  updateBuffers();
-  m_renderedDepthEnabled = m_committed.depthEnabled;
-  m_renderedIdEnabled = m_committed.idEnabled;
-  anariRenderFrame(m_device, m_frame);
-  anariFrameReady(m_device, m_frame, ANARI_WAIT);
   // Every rank sees the same commits, so all of them skip or composite.
-  if (m_bufferSize.x != 0 && m_bufferSize.y != 0) {
-    composite();
-    compositeIds();
+  const auto size = m_committed.size;
+  const bool compositing =
+      m_comm != MPI_COMM_NULL && size.x != 0 && size.y != 0;
+
+  // Everything up to compositing is local to this rank, and may fail on it
+  // alone (an unsupported color type, out of memory, a CUDA error).
+  std::exception_ptr failure;
+  const void *color = nullptr;
+  const float *depth = nullptr;
+  try {
+    updateBuffers();
+    m_renderedDepthEnabled = m_committed.depthEnabled;
+    m_renderedIdEnabled = m_committed.idEnabled;
+    anariRenderFrame(m_device, m_frame);
+    anariFrameReady(m_device, m_frame, ANARI_WAIT);
+    if (compositing) {
+      depth = (const float *)mapWrapped("channel.depth", ANARI_FLOAT32);
+      if (m_bufferColorType != ANARI_UNKNOWN)
+        color = mapWrapped("channel.color", m_bufferColorType);
+      stage(color, depth);
+      stageIds(depth);
+    }
+  } catch (...) {
+    if (!compositing)
+      throw;
+    failure = std::current_exception();
+  }
+
+  if (compositing) {
+    auto unmap = [&] {
+      if (depth)
+        anariUnmapFrame(m_device, m_frame, "channel.depth");
+      if (color)
+        anariUnmapFrame(m_device, m_frame, "channel.color");
+    };
+    // Before the first collective, so that if any rank failed, all of them
+    // skip compositing instead of the others hanging in it.
+    const bool allOk = agree(m_comm, !failure);
+    try {
+      if (allOk) {
+        composite();
+        compositeIds();
+      }
+    } catch (...) {
+      unmap();
+      throw;
+    }
+    unmap();
+    if (!allOk) {
+      // nothing was composited, so there is nothing to map
+      freeBuffers();
+      if (failure)
+        std::rethrow_exception(failure);
+      throw std::runtime_error("another rank failed to render or prepare "
+                               "this frame for compositing, so no rank "
+                               "composited it");
+    }
   }
   // The composited frame is ready (rendering is synchronous), so the
   // continuation has run before any anariFrameReady() returns.
@@ -469,47 +539,53 @@ void FrameWrapper::renderFrame()
   }
 }
 
-void FrameWrapper::compositeIds()
+const void *FrameWrapper::mapWrapped(const char *channel, ANARIDataType type)
 {
-  std::vector<size_t> channels;
+  uint32_t width = 0, height = 0;
+  ANARIDataType mappedType = ANARI_UNKNOWN;
+  const void *data =
+      anariMapFrame(m_device, m_frame, channel, &width, &height, &mappedType);
+  if (data && mappedType == type && width == m_bufferSize.x
+      && height == m_bufferSize.y)
+    return data;
+  if (data)
+    anariUnmapFrame(m_device, m_frame, channel);
+  throw std::runtime_error(std::string("the wrapped frame did not render '")
+      + channel + "' as " + anari::toString(type) + " of the frame's size");
+}
+
+void FrameWrapper::stageIds(const float *depth)
+{
+  m_idChannels.clear();
+  m_idRecords = {};
   for (size_t i = 0; i < NUM_ID_CHANNELS; i++) {
     if (m_renderedIdEnabled[i])
-      channels.push_back(i);
+      m_idChannels.push_back(i);
     else
       m_ids[i] = {};
   }
+  const auto &channels = m_idChannels;
   if (channels.empty())
     return;
 
-  // the same on every rank, so none is left waiting in the reduction
+  // the same on every rank
   const size_t numPixels = size_t(m_bufferSize.x) * m_bufferSize.y;
   if (numPixels > size_t(INT_MAX)) {
     throw std::runtime_error(
         "cannot composite id channels: the frame has too many pixels");
   }
   const size_t words = RECORD_FIRST_ID + channels.size();
-  std::vector<uint32_t> records(numPixels * words);
+  auto &records = m_idRecords;
+  records.resize(numPixels * words);
+
+  for (size_t p = 0; p < numPixels; p++) {
+    uint32_t *record = records.data() + p * words;
+    std::memcpy(&record[RECORD_DEPTH], &depth[p], sizeof(float));
+    record[RECORD_RANK] = uint32_t(m_rank);
+  }
 
   uint32_t width = 0, height = 0;
   ANARIDataType type = ANARI_UNKNOWN;
-  auto *depth = (const float *)anariMapFrame(
-      m_device, m_frame, "channel.depth", &width, &height, &type);
-  if (!depth || type != ANARI_FLOAT32
-      || size_t(width) * height != numPixels) {
-    // still take part in the reduction, with no hits
-    m_reportStatus(ANARI_SEVERITY_WARNING,
-        "the wrapped frame did not render 'channel.depth' as ANARI_FLOAT32; "
-        "compositing the id channels as no hits");
-    depth = nullptr;
-  }
-  for (size_t p = 0; p < numPixels; p++) {
-    uint32_t *record = records.data() + p * words;
-    const float z = depth ? depth[p] : INFINITY;
-    std::memcpy(&record[RECORD_DEPTH], &z, sizeof(z));
-    record[RECORD_RANK] = uint32_t(m_rank);
-  }
-  anariUnmapFrame(m_device, m_frame, "channel.depth");
-
   for (size_t c = 0; c < channels.size(); c++) {
     const char *name = ID_CHANNELS[channels[c]];
     auto *ids = (const uint32_t *)anariMapFrame(
@@ -526,6 +602,16 @@ void FrameWrapper::compositeIds()
       records[p * words + RECORD_FIRST_ID + c] = valid ? ids[p] : ~0u;
     anariUnmapFrame(m_device, m_frame, name);
   }
+}
+
+void FrameWrapper::compositeIds()
+{
+  const auto &channels = m_idChannels;
+  if (channels.empty())
+    return;
+  const size_t numPixels = size_t(m_bufferSize.x) * m_bufferSize.y;
+  const size_t words = RECORD_FIRST_ID + channels.size();
+  auto &records = m_idRecords;
 
   MPI_Datatype recordType;
   MPI_Type_contiguous(int(words), MPI_UINT32_T, &recordType);
@@ -550,6 +636,7 @@ void FrameWrapper::compositeIds()
     for (size_t p = 0; p < numPixels; p++)
       ids[p] = records[p * words + RECORD_FIRST_ID + c];
   }
+  records = {};
 }
 
 } // namespace ptc

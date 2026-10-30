@@ -35,6 +35,7 @@ namespace ptc {
     
     // void renderFrame() override;
     void allocate() override;
+    void stage(const void *color, const float *depth) override;
     void composite() override;
     void cleanup() override;
     void createCompositor(MPI_Comm comm) override;
@@ -43,6 +44,9 @@ namespace ptc {
     std::unique_ptr<CPUCompositor> compositor;
     /*! compositor color input when the frame has no channel.color */
     std::vector<uint32_t> m_noColor;
+    /*! what stage() staged: the compositor's input */
+    const void *m_inColor{nullptr};
+    const float *m_inDepth{nullptr};
   };
 
 }

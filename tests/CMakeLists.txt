@@ -140,6 +140,13 @@ ptc_add_smoke_tests(ids_unset_all --color ufixed8 --unset-all --ids)
 # status callback on every rank (no exception escapes anariRenderFrame) and
 # there is nothing to map.
 ptc_add_smoke_tests(unsupported_color --color float32-vec3)
+# The same on the last rank only (ticket 11): the ranks agree that the render
+# failed instead of the others hanging in the compositor, so every rank
+# reports an ERROR and returns.
+ptc_add_smoke_tests(fail_last_rank --color ufixed8 --fail-last-rank
+  RANKS 2 3)
+ptc_add_smoke_tests(fail_last_rank_ids --color ufixed8 --ids --depth
+  --fail-last-rank RANKS 2 3)
 
 # Frame completion callback (ticket 06): called once per render with the ptc
 # handles, after compositing; not called once unset.
@@ -174,6 +181,31 @@ ptc_add_smoke_tests(ufixed8_blend_split --color ufixed8 --background blend
 # each half composites its own ids
 ptc_add_smoke_tests(ids_split --color ufixed8 --comm split --ids
   ${PTC_SPLIT_RANKS})
+
+# MPI lifetime (ticket 11): with and without the app initializing MPI, ptc
+# keeps MPI initialized until its last device is released, and finalizes it
+# only if it initialized it. Device release is collective, so every rank
+# releases the same devices in the same order.
+add_executable(ptcLifetime ptcLifetime.cpp)
+target_link_libraries(ptcLifetime PRIVATE anari::anari MPI::MPI_CXX)
+add_dependencies(ptcLifetime anari_library_ptc)
+foreach(scenario two-devices single query-release)
+  foreach(mpi app ptc)
+    set(extra "")
+    if (mpi STREQUAL "app")
+      set(extra --app-mpi)
+    endif()
+    foreach(ranks 1 2)
+      set(test ptc_lifetime_${scenario}_${mpi}_mpi_${ranks}ranks)
+      add_test(NAME ${test} COMMAND
+        ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
+        ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ptcLifetime> ${MPIEXEC_POSTFLAGS}
+        --expect-library $<TARGET_FILE:anari_library_ptc>
+        --scenario ${scenario} ${extra})
+      ptc_set_test_environment(${test} ${ranks})
+    endforeach()
+  endforeach()
+endforeach()
 
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.

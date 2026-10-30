@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 #if PTC_CUDA
 #include "CUDAFrameWrapper.h"
 #else
@@ -31,7 +32,8 @@
 
 namespace ptc {
 
-int PTCDevice::s_numMpiPTCDevices = 0;
+std::mutex PTCDevice::s_mpiMutex;
+int PTCDevice::s_numPrivateMpiHolders = 0;
 bool PTCDevice::s_mpiInitializedPrivately = false;
 
 // Helper functions ///////////////////////////////////////////////////////////
@@ -520,11 +522,14 @@ PTCDevice::~PTCDevice()
   if (m_ptd)
     m_ptd->release(m_ptd->this_device());
 
-  if (s_mpiInitializedPrivately)
-    s_numMpiPTCDevices--;
-  if (s_numMpiPTCDevices == 0 && s_mpiInitializedPrivately) {
-    reportMessage(ANARI_SEVERITY_DEBUG, "finalizing MPI");
-    MPI_Finalize();
+  // Device release is collective, so every rank gets here for the same
+  // device and finalizes together.
+  if (m_holdsPrivateMpi) {
+    std::lock_guard<std::mutex> lock(s_mpiMutex);
+    if (--s_numPrivateMpiHolders == 0) {
+      reportMessage(ANARI_SEVERITY_DEBUG, "finalizing MPI");
+      MPI_Finalize();
+    }
   }
 }
 
@@ -534,6 +539,9 @@ void PTCDevice::initDevice()
     return;
 
   reportMessage(ANARI_SEVERITY_DEBUG, "initializing PTC device (%p)", this);
+
+  // first: if this throws, nothing else was set up yet
+  acquireMpi();
 
   bool usedFallback = false;
   ANARILibrary lib = loadWrappedLibrary(
@@ -551,18 +559,37 @@ void PTCDevice::initDevice()
   if (!m_ptd)
     reportMessage(ANARI_SEVERITY_FATAL_ERROR, "failed to create device");
 
-  int mpiInitialized = 0;
-  MPI_Initialized(&mpiInitialized);
-  if (s_numMpiPTCDevices == 0 && !mpiInitialized) {
+  m_initialized = true;
+}
+
+void PTCDevice::acquireMpi()
+{
+  if (m_holdsPrivateMpi)
+    return; // an earlier initDevice() got this far
+  std::lock_guard<std::mutex> lock(s_mpiMutex);
+  int finalized = 0;
+  MPI_Finalized(&finalized);
+  if (finalized) {
+    // MPI can't be initialized twice in one process
+    throw std::runtime_error(s_mpiInitializedPrivately
+            ? "MPI was finalized when the last ptc device that used it was "
+              "released; keep a ptc device alive, or initialize MPI in the "
+              "app, to create more"
+            : "MPI was finalized by the app");
+  }
+  int initialized = 0;
+  MPI_Initialized(&initialized);
+  if (!initialized) {
     reportMessage(ANARI_SEVERITY_DEBUG, "initializing MPI");
     MPI_Init(nullptr, nullptr);
     s_mpiInitializedPrivately = true;
-    s_numMpiPTCDevices++;
   } else {
     reportMessage(ANARI_SEVERITY_DEBUG, "MPI already initialized");
   }
-
-  m_initialized = true;
+  if (s_mpiInitializedPrivately) {
+    s_numPrivateMpiHolders++;
+    m_holdsPrivateMpi = true;
+  }
 }
 
 void PTCDevice::deviceCommitParameters()
