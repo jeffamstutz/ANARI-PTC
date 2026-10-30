@@ -89,9 +89,12 @@ free its communicator after the commit.
 - Releasing a frame is collective over its communicator: every rank of it
   must release the frame.
 - If rendering or preparing a frame fails on some ranks only (e.g. out of
-  memory), the ranks agree on that before compositing: every rank skips
-  compositing and reports an error, instead of the others hanging. The
-  same holds for creating the compositor when a communicator is committed.
+  memory, or an unsupported color type), the ranks agree on that before
+  compositing: every rank skips compositing and reports an error, instead
+  of the others hanging. Committing a communicator agrees the same way on
+  whether every rank created its compositor. A failure *inside* the
+  compositor's communication (or, with CUDA, inside GPU selection while
+  creating the compositor) can still leave the other ranks waiting.
 
 ## MPI initialization and device lifetime
 

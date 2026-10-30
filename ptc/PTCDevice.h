@@ -214,11 +214,11 @@ namespace ptc {
   ~PTCDevice() override;
 
   void initDevice();
+
+ private:
   /*! initializes MPI privately unless it is already; if ptc owns MPI, this
       device then keeps it initialized until it is destroyed */
   void acquireMpi();
-
- private:
   void deviceCommitParameters();
   int deviceGetProperty(
       const char *name, ANARIDataType type, void *mem, uint64_t size);

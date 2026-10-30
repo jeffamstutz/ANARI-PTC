@@ -524,12 +524,19 @@ PTCDevice::~PTCDevice()
 
   // Device release is collective, so every rank gets here for the same
   // device and finalizes together.
+  // (Status messages go out after unlocking: the app's callback may create
+  // or release devices.)
   if (m_holdsPrivateMpi) {
-    std::lock_guard<std::mutex> lock(s_mpiMutex);
-    if (--s_numPrivateMpiHolders == 0) {
-      reportMessage(ANARI_SEVERITY_DEBUG, "finalizing MPI");
-      MPI_Finalize();
+    bool finalized = false;
+    {
+      std::lock_guard<std::mutex> lock(s_mpiMutex);
+      if (--s_numPrivateMpiHolders == 0) {
+        MPI_Finalize();
+        finalized = true;
+      }
     }
+    if (finalized)
+      reportMessage(ANARI_SEVERITY_DEBUG, "finalized MPI");
   }
 }
 
@@ -566,30 +573,32 @@ void PTCDevice::acquireMpi()
 {
   if (m_holdsPrivateMpi)
     return; // an earlier initDevice() got this far
-  std::lock_guard<std::mutex> lock(s_mpiMutex);
-  int finalized = 0;
-  MPI_Finalized(&finalized);
-  if (finalized) {
-    // MPI can't be initialized twice in one process
-    throw std::runtime_error(s_mpiInitializedPrivately
-            ? "MPI was finalized when the last ptc device that used it was "
-              "released; keep a ptc device alive, or initialize MPI in the "
-              "app, to create more"
-            : "MPI was finalized by the app");
+  bool initializedHere = false;
+  {
+    std::lock_guard<std::mutex> lock(s_mpiMutex);
+    int finalized = 0;
+    MPI_Finalized(&finalized);
+    if (finalized) {
+      // MPI can't be initialized twice in one process
+      throw std::runtime_error(s_mpiInitializedPrivately
+              ? "MPI was finalized when the last ptc device that used it "
+                "was released; keep a ptc device alive, or initialize MPI "
+                "in the app, to create more"
+              : "MPI was finalized by the app");
+    }
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if (!initialized) {
+      MPI_Init(nullptr, nullptr);
+      s_mpiInitializedPrivately = initializedHere = true;
+    }
+    if (s_mpiInitializedPrivately) {
+      s_numPrivateMpiHolders++;
+      m_holdsPrivateMpi = true;
+    }
   }
-  int initialized = 0;
-  MPI_Initialized(&initialized);
-  if (!initialized) {
-    reportMessage(ANARI_SEVERITY_DEBUG, "initializing MPI");
-    MPI_Init(nullptr, nullptr);
-    s_mpiInitializedPrivately = true;
-  } else {
-    reportMessage(ANARI_SEVERITY_DEBUG, "MPI already initialized");
-  }
-  if (s_mpiInitializedPrivately) {
-    s_numPrivateMpiHolders++;
-    m_holdsPrivateMpi = true;
-  }
+  reportMessage(ANARI_SEVERITY_DEBUG,
+      initializedHere ? "initialized MPI" : "MPI already initialized");
 }
 
 void PTCDevice::deviceCommitParameters()

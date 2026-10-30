@@ -72,6 +72,8 @@ namespace ptc {
   void CPUFrameWrapper::cleanup()
   {
     m_noColor = {};
+    m_inColor = nullptr;
+    m_inDepth = nullptr;
   }
 
   void CPUFrameWrapper::createCompositor(MPI_Comm comm)
