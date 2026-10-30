@@ -6,3 +6,4 @@
 - 06 frame-completion-callback — needs-user (non-blocking) — 231e736 781a1f8 — followups/06-callback-threading-and-scope.md
 - 08 cpu-compositor-float-and-ub — needs-user (BLOCKING: CPU/CUDA blend convention) — 0ded9fd 55d87fc — followups/08-blend-convention-and-error-policy.md — not landed, run halted
 - 08 cpu-compositor-float-and-ub — landed after user decisions on followups/08 (blend convention → 09; error policy → 11/12/14) — 0ded9fd 55d87fc
+- 07 honor-mpi-communicator — needs-user (non-blocking) — 9184d6e 75ecea8 — followups/07-collectiveness-and-comm-lifetime.md
