@@ -117,6 +117,16 @@ foreach(color ${PTC_TEST_COLORS})
   ptc_add_smoke_tests(${color}_uncommitted --color ${color} --uncommitted)
 endforeach()
 
+# Blending (ticket 09): every rank's background differs. Where all ranks miss,
+# the composited pixel must match premultiplied "over" of the backgrounds,
+# computed in linear space, for every color type ptc composites. With opaque
+# backgrounds, only the front one shows and must round-trip unchanged.
+foreach(color ufixed8 ufixed8-linear float32)
+  ptc_add_smoke_tests(${color}_blend --color ${color} --background blend
+    --depth)
+  ptc_add_smoke_tests(${color}_opaque --color ${color} --background opaque)
+endforeach()
+
 # A color type ptc cannot composite: rendering reports an ERROR through the
 # status callback on every rank (no exception escapes anariRenderFrame) and
 # there is nothing to map.
@@ -149,6 +159,9 @@ ptc_add_smoke_tests(split_callback --comm split --callback ${PTC_SPLIT_RANKS})
 # on 2 ranks, halves and even/odd ranks are the same split
 ptc_add_smoke_tests(split_to_interleaved --first-comm split
   --comm interleaved --depth RANKS 4)
+# each half blends its own ranks' backgrounds
+ptc_add_smoke_tests(ufixed8_blend_split --color ufixed8 --background blend
+  --comm split ${PTC_SPLIT_RANKS})
 
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.

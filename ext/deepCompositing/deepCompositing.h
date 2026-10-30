@@ -36,6 +36,17 @@
 
 namespace dc {
 
+  /*! pixel format of the composited color that Compositor::finish()
+      writes; fragment colors are premultiplied, and blended with
+      premultiplied "over" in linear space */
+  enum class ColorFormat {
+    RGBA8,      /*!< 4x8 bit in one uint32_t, r in the low byte */
+    RGBA8_SRGB, /*!< as RGBA8, with sRGB-encoded rgb (alpha linear); the
+                     fragments' rgb are sRGB-encoded too, and are decoded
+                     to linear for blending */
+    RGBA32F     /*!< 4 floats, r first */
+  };
+
   class TwoPassInterface;
   class FixedFragsPerPixel;
 
@@ -193,7 +204,7 @@ namespace dc {
         ranks should pass null here */
     void finish(void *whereToWriteFinalPixels,
                 float *whereToWriteFinalDepth,
-                bool useFloat4);
+                ColorFormat format);
 
     /*! resize the (device) frame buffer to given size */
     void resize(const int2 &size);

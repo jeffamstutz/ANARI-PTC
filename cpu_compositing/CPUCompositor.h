@@ -42,8 +42,9 @@ namespace ptc {
   {
     /*! pixel format of the color the compositor reads and writes */
     enum class ColorFormat {
-      RGBA8,   /*!< 4x8 bit in one uint32_t, r in the low byte */
-      RGBA32F  /*!< 4 floats, r first */
+      RGBA8,      /*!< 4x8 bit in one uint32_t, r in the low byte */
+      RGBA8_SRGB, /*!< as RGBA8, with sRGB-encoded rgb (alpha linear) */
+      RGBA32F     /*!< 4 floats, r first */
     };
 
     CPUCompositor(MPI_Comm comm);
@@ -51,7 +52,9 @@ namespace ptc {
 
     void resize(int sx, int sy, ColorFormat format);
     /*! out_color and out_depth should be null on all ranks > 0; colors
-        are in the format given to resize() */
+        are in the format given to resize(), with premultiplied rgb;
+        fragments are blended with premultiplied "over", in linear space
+        (RGBA8_SRGB is decoded before and encoded after) */
     void run(void *out_color,
              float *out_depth,
              const void *in_color,

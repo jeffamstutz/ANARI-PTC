@@ -44,10 +44,12 @@ namespace ptc {
   
   void CPUFrameWrapper::allocate()
   {
-    compositor->resize(m_bufferSize.x, m_bufferSize.y,
-                      m_bufferColorType == ANARI_FLOAT32_VEC4
-                      ? CPUCompositor::ColorFormat::RGBA32F
-                      : CPUCompositor::ColorFormat::RGBA8);
+    auto format = CPUCompositor::ColorFormat::RGBA8;
+    if (m_bufferColorType == ANARI_FLOAT32_VEC4)
+      format = CPUCompositor::ColorFormat::RGBA32F;
+    else if (m_bufferColorType == ANARI_UFIXED8_RGBA_SRGB)
+      format = CPUCompositor::ColorFormat::RGBA8_SRGB;
+    compositor->resize(m_bufferSize.x, m_bufferSize.y, format);
 
     if (m_bufferColorType == ANARI_UNKNOWN)
       m_noColor.assign(size_t(m_bufferSize.x) * m_bufferSize.y, 0u);

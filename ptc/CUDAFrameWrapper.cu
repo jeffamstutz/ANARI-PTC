@@ -61,6 +61,8 @@ namespace ptc {
       dc::Fragment frag(z, make_float3(r, g, b), a);
       di.write(ix, iy, frag);
     } else {
+      // UFIXED8_RGBA_SRGB stays sRGB-encoded here, exactly (fragments
+      // are 8 bit); the compositor decodes it before blending
       const uint32_t rgba = *((const uint32_t *)d_color + offset);
       const float a = ((rgba >> 24) & 0xff) / 255.f;
       const float b = ((rgba >> 16) & 0xff) / 255.f;
@@ -142,10 +144,14 @@ namespace ptc {
        d_depth,
        d_color_in,
        m_bufferColorType);
-    bool useFloat4 = (m_bufferColorType == ANARI_FLOAT32_VEC4);
+    auto format = dc::ColorFormat::RGBA8;
+    if (m_bufferColorType == ANARI_FLOAT32_VEC4)
+      format = dc::ColorFormat::RGBA32F;
+    else if (m_bufferColorType == ANARI_UFIXED8_RGBA_SRGB)
+      format = dc::ColorFormat::RGBA8_SRGB;
     m_deepComp->finish(m_rank == 0 ? d_color_out : nullptr,
                       m_rank == 0 ? d_depth_out : nullptr,
-                      useFloat4);
+                      format);
     cudaMemcpy(m_color, 
                d_color_out,
                numPixels * colorSize,

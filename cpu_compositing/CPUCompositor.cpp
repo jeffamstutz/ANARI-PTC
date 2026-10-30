@@ -23,6 +23,7 @@
 #include <tbb/task_arena.h>
 #include <cmath>
 #include <algorithm>
+#include <array>
 #include <limits>
 
 namespace ptc {
@@ -110,6 +111,47 @@ namespace ptc {
         | (toUnorm8(c.y) << 8)
         | (toUnorm8(c.z) << 16)
         | (toUnorm8(c.w) << 24);
+    }
+  };
+
+  /*! IEC 61966-2-1 sRGB transfer functions, as helide's (and GPU sRGB
+      formats') */
+  inline float srgbToLinear(float v)
+  {
+    return v <= 0.04045f ? v * (1.f/12.92f)
+      : std::pow((v + 0.055f) * (1.f/1.055f), 2.4f);
+  }
+  inline float linearToSrgb(float v)
+  {
+    return v <= 0.0031308f ? 12.92f * v
+      : 1.055f * std::pow(v, 1.f/2.4f) - 0.055f;
+  }
+
+  /*! ColorFormat::RGBA8_SRGB: as RGBA8, but rgb are sRGB-encoded (from
+      premultiplied linear rgb, per channel); load() decodes to linear and
+      store() encodes again. Alpha is linear. */
+  struct RGBA8SRGBPixel {
+    using Element = uint32_t;
+    static math::float4 load(const Element *buf, size_t i)
+    {
+      static const auto toLinear = [] {
+        std::array<float, 256> lut;
+        for (int code=0;code<256;code++)
+          lut[code] = srgbToLinear(code * (1.f/255.f));
+        return lut;
+      }();
+      const uint32_t v = buf[i];
+      return math::float4(toLinear[(v >>  0) & 0xff],
+                          toLinear[(v >>  8) & 0xff],
+                          toLinear[(v >> 16) & 0xff],
+                          ((v >> 24) & 0xff) * (1.f/255.f));
+    }
+    static void store(Element *buf, size_t i, const math::float4 &c)
+    {
+      RGBA8Pixel::store(buf, i, math::float4(linearToSrgb(c.x),
+                                             linearToSrgb(c.y),
+                                             linearToSrgb(c.z),
+                                             c.w));
     }
   };
 
@@ -282,19 +324,14 @@ namespace ptc {
           }
           std::sort(fragments.begin(), fragments.end());
 
-          // back to front: each fragment goes over what is behind it
+          // back to front: each fragment goes over what is behind it;
+          // colors are premultiplied, so rgb and alpha blend alike
           math::float4 composited
             = PIXEL_T::load(colors, it + fragments.back().rank*rankStep);
           for (size_t i=fragments.size()-1;i-- > 0;) {
             const math::float4 frag
               = PIXEL_T::load(colors, it + fragments[i].rank*rankStep);
-            const float alpha = frag.w;
-            composited = math::float4(
-              alpha * math::float3(frag.x,frag.y,frag.z)
-              + (1.f-alpha) * math::float3(composited.x,
-                                           composited.y,
-                                           composited.z),
-              alpha + (1.f-alpha) * composited.w);
+            composited = frag + (1.f-frag.w) * composited;
           }
 
           float final_depth = fragments.front().depth;
@@ -338,10 +375,16 @@ namespace ptc {
     // ------------------------------------------------------------------
     // local compositing stage
     // ------------------------------------------------------------------
-    if (format == ColorFormat::RGBA32F)
+    switch (format) {
+    case ColorFormat::RGBA32F:
       compositeMyRange<RGBA32FPixel>();
-    else
+      break;
+    case ColorFormat::RGBA8_SRGB:
+      compositeMyRange<RGBA8SRGBPixel>();
+      break;
+    default:
       compositeMyRange<RGBA8Pixel>();
+    }
 
     // ------------------------------------------------------------------
     // final gather stage

@@ -162,19 +162,25 @@ namespace dc {
     }
   }
 
+  /*! [0,1] to 0..255, rounded; out-of-range values (and NaN) clamp */
   inline __device__ uint32_t make_8bit(const float f)
   {
-    return min(255,max(0,int(f*256.f)));
+    return uint32_t(fminf(fmaxf(f*255.f+.5f,0.f),255.f));
   }
 
-  inline __device__ uint32_t make_rgba(const float3 color)
+  /*! IEC 61966-2-1 sRGB transfer functions, as helide's (and GPU sRGB
+      formats') */
+  inline __device__ float srgbToLinear(float v)
   {
-    return
-      (make_8bit(color.x) << 0) +
-      (make_8bit(color.y) << 8) +
-      (make_8bit(color.z) << 16) +
-      (0xffU << 24);
+    return v <= 0.04045f ? v * (1.f/12.92f)
+      : powf((v + 0.055f) * (1.f/1.055f), 2.4f);
   }
+  inline __device__ float linearToSrgb(float v)
+  {
+    return v <= 0.0031308f ? 12.92f * v
+      : 1.055f * powf(v, 1.f/2.4f) - 0.055f;
+  }
+
   inline __device__ uint32_t make_rgba(const float4 color)
   {
     return
@@ -424,7 +430,7 @@ namespace dc {
   __global__
   void compositeKernel(void *compositedColor,
                        float *compositedDepth,
-                       bool useFloat4,
+                       ColorFormat format,
                        const uint32_t *compOffsets,
                        Fragment *incomingFragments,
                        uint32_t numPixelsOnThisRank,
@@ -458,23 +464,31 @@ namespace dc {
       if (depth == INFINITY && float(nextClosestFragment->z) < DC_NO_HIT_Z)
         depth = nextClosestFragment->z;
 
+      // front to back, premultiplied: whatever is still uncovered,
+      // (1-alpha), lets this fragment through
       float4 fragColor = nextClosestFragment->getRGBA();
-      color = color
-        +  (1.f-alpha)
-        // *  fragColor.w
-        *  (const float3&)fragColor;
-      // float3((float)nextClosestFragment->r,
-      //          (float)nextClosestFragment->g,
-      //          (float)nextClosestFragment->b);
+      float3 fragRGB = make_float3(fragColor.x,fragColor.y,fragColor.z);
+      if (format == ColorFormat::RGBA8_SRGB)
+        fragRGB = make_float3(srgbToLinear(fragRGB.x),
+                              srgbToLinear(fragRGB.y),
+                              srgbToLinear(fragRGB.z));
+      color = color + (1.f-alpha) * fragRGB;
       alpha += (1.f-alpha)*fragColor.w;
 
       nextClosestFragment->z = 1e20f;
     }
-    if (useFloat4) 
-      // ((float4*)compositedColor)[pixelIdx] = make_float4(.2f,.4f,.6f,1.f);
-      ((float4*)compositedColor)[pixelIdx] = make_float4(color.x,color.y,color.z,1.f);
+    if (format == ColorFormat::RGBA32F)
+      ((float4*)compositedColor)[pixelIdx]
+        = make_float4(color.x,color.y,color.z,alpha);
+    else if (format == ColorFormat::RGBA8_SRGB)
+      ((uint32_t*)compositedColor)[pixelIdx]
+        = make_rgba(make_float4(linearToSrgb(color.x),
+                                linearToSrgb(color.y),
+                                linearToSrgb(color.z),
+                                alpha));
     else
-      ((uint32_t*)compositedColor)[pixelIdx] = make_rgba(color);
+      ((uint32_t*)compositedColor)[pixelIdx]
+        = make_rgba(make_float4(color.x,color.y,color.z,alpha));
     compositedDepth[pixelIdx] = depth;
   }
     
@@ -589,7 +603,7 @@ namespace dc {
 
   void Compositor::finish(void *whereToWriteFinalPixels,
                           float *whereToWriteFinalDepth,
-                          bool useFloat4)
+                          ColorFormat format)
   {
     CUDA_SYNC_CHECK();
     if (affinitizedGPU < 0)
@@ -984,7 +998,7 @@ namespace dc {
     // finally, have all fragments ... composite
     // ==================================================================
     size_t pixelSize
-      = useFloat4
+      = format == ColorFormat::RGBA32F
       ? sizeof(float4)
       : sizeof(uint32_t);
     
@@ -996,7 +1010,7 @@ namespace dc {
     CUDA_CALL(Malloc(&compositedDepth,
                      numPixelsOnThisRank*sizeof(float)));
     compositeKernel<<<divRoundUp((int)numPixelsOnThisRank,128),128>>>
-      (compositedColor,compositedDepth,useFloat4,
+      (compositedColor,compositedDepth,format,
        fullIntCounters,
        incomingFragments,numPixelsOnThisRank,size);
     CUDA_SYNC_CHECK();

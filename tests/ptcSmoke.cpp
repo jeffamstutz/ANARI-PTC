@@ -15,6 +15,7 @@
 //                 [--resize] [--first-color <type>] [--unset-all]
 //                 [--uncommitted] [--callback] [--invert-check]
 //                 [--comm <comm>] [--first-comm <comm>]
+//                 [--background none|blend|opaque]
 //                 [--expect-library <path>]
 //
 //   --color           frame color channel type (default ufixed8); 'none'
@@ -52,6 +53,17 @@
 //   --first-comm      render a first frame over this communicator, then
 //                     change it to --comm (going back to 'world' unsets
 //                     mpiCommunicator)
+//   --background      renderer background of each rank (default none:
+//                     transparent black). 'blend' gives every rank a
+//                     different semi-transparent background, 'opaque' a
+//                     different opaque one; both pick it by world rank. The
+//                     background corner is a miss on every rank, so ptc
+//                     composites the backgrounds there in rank order (equal
+//                     depth ties go to the lower rank) with premultiplied
+//                     "over"; rank 0 checks it against that blend computed
+//                     here in linear float, encoded like the color channel.
+//                     With 'opaque' only rank 0's background shows, so it
+//                     must round-trip within 1 LSB.
 //   --expect-library  fail unless the loaded libanari_library_ptc is this
 //                     file (guards against picking up an installed copy
 //                     instead of the one under test)
@@ -86,6 +98,14 @@
 using namespace anari::math;
 
 namespace {
+
+// Renderer background of every rank (--background)
+enum class Background
+{
+  None, // transparent black
+  Blend, // semi-transparent, different on each rank
+  Opaque // opaque, different on each rank
+};
 
 // How the ranks are split into the communicators frames composite over
 enum class CommSplit
@@ -129,6 +149,7 @@ struct Options
   bool invertCheck{false};
   CommSplit comm{CommSplit::World};
   std::optional<CommSplit> firstComm;
+  Background background{Background::None};
   std::string expectLibrary;
 
   bool twoFrames() const
@@ -196,6 +217,21 @@ bool compositable(ANARIDataType type)
       || type == ANARI_UFIXED8_RGBA_SRGB || type == ANARI_FLOAT32_VEC4;
 }
 
+bool parseBackground(const std::string &bg, Background &out)
+{
+  if (bg == "none")
+    out = Background::None;
+  else if (bg == "blend")
+    out = Background::Blend;
+  else if (bg == "opaque")
+    out = Background::Opaque;
+  else {
+    fprintf(stderr, "unknown background '%s'\n", bg.c_str());
+    return false;
+  }
+  return true;
+}
+
 bool parseComm(const std::string &comm, CommSplit &split)
 {
   if (comm == "world")
@@ -217,7 +253,8 @@ bool parseArgs(int argc, char **argv, Options &opts)
     const std::string arg = argv[i];
     const bool hasValue = i + 1 < argc;
     if ((arg == "--color" || arg == "--first-color" || arg == "--comm"
-            || arg == "--first-comm" || arg == "--expect-library")
+            || arg == "--first-comm" || arg == "--background"
+            || arg == "--expect-library")
         && !hasValue) {
       fprintf(stderr, "missing value for '%s'\n", arg.c_str());
       return false;
@@ -250,8 +287,10 @@ bool parseArgs(int argc, char **argv, Options &opts)
       if (!parseComm(argv[++i], split))
         return false;
       opts.firstComm = split;
-    }
-    else if (arg == "--expect-library")
+    } else if (arg == "--background") {
+      if (!parseBackground(argv[++i], opts.background))
+        return false;
+    } else if (arg == "--expect-library")
       opts.expectLibrary = argv[++i];
     else {
       fprintf(stderr, "unknown argument '%s'\n", arg.c_str());
@@ -432,6 +471,57 @@ float3 sphereColor(const Layout &l, int r)
   return kColors[l.worldRanks[r] % kNumColors];
 }
 
+// Backgrounds by world rank, as premultiplied linear RGB and alpha (the
+// convention ptc composites in). The values are far enough apart that
+// blending the sRGB-encoded values, or treating them as straight alpha, is
+// off by many LSBs.
+const float4 kBlendBackgrounds[] = {{0.20f, 0.02f, 0.00f, 0.40f},
+    {0.00f, 0.15f, 0.05f, 0.30f},
+    {0.05f, 0.00f, 0.25f, 0.50f},
+    {0.10f, 0.10f, 0.00f, 0.25f}};
+// rank 0's has a dark channel, where sRGB and linear 8-bit codes differ most
+const float4 kOpaqueBackgrounds[] = {{0.002f, 0.18f, 0.60f, 1.f},
+    {0.50f, 0.50f, 0.00f, 1.f},
+    {0.00f, 0.50f, 0.50f, 1.f},
+    {0.50f, 0.00f, 0.50f, 1.f}};
+const int kNumBackgrounds =
+    int(sizeof(kBlendBackgrounds) / sizeof(kBlendBackgrounds[0]));
+
+float4 background(Background bg, int worldRank)
+{
+  switch (bg) {
+  case Background::Blend:
+    return kBlendBackgrounds[worldRank % kNumBackgrounds];
+  case Background::Opaque:
+    return kOpaqueBackgrounds[worldRank % kNumBackgrounds];
+  default:
+    return float4(0.f);
+  }
+}
+
+// What ptc must composite where every rank of the layout misses: the ranks'
+// backgrounds front to back in rank order, with premultiplied "over"
+float4 expectedBackground(Background bg, const Layout &l)
+{
+  float4 result(0.f);
+  for (int r = 0; r < l.size; r++) {
+    const float4 b = background(bg, l.worldRanks[r]);
+    result = result + (1.f - result.w) * b;
+  }
+  return result;
+}
+
+// IEC 61966-2-1 (the curve helide uses for UFIXED8_RGBA_SRGB)
+float linearToSrgb(float v)
+{
+  return v <= 0.0031308f ? 12.92f * v : 1.055f * std::pow(v, 1.f / 2.4f) - 0.055f;
+}
+
+int toUnorm8(float v)
+{
+  return int(std::fmin(std::fmax(v, 0.f), 1.f) * 255.f + 0.5f);
+}
+
 // This rank's spheres, placed by its rank in the layout's communicator
 anari::World buildWorld(anari::Device d, const Layout &l)
 {
@@ -475,8 +565,11 @@ struct Scene
   anari::Renderer renderer;
 };
 
-Scene buildScene(anari::Device d, anari::World w)
+Scene buildScene(anari::Device d, anari::World w, Background bg)
 {
+  int worldRank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &worldRank);
+
   auto cam = anari::newObject<anari::Camera>(d, "orthographic");
   anari::setParameter(d, cam, "position", float3(0, 0, kCameraZ));
   anari::setParameter(d, cam, "direction", float3(0, 0, -1));
@@ -486,7 +579,7 @@ Scene buildScene(anari::Device d, anari::World w)
   anari::commitParameters(d, cam);
 
   auto ren = anari::newObject<anari::Renderer>(d, "default");
-  anari::setParameter(d, ren, "background", float4(0, 0, 0, 0));
+  anari::setParameter(d, ren, "background", background(bg, worldRank));
   anari::setParameter(d, ren, "ambientRadiance", 1.f);
   anari::commitParameters(d, ren);
 
@@ -690,6 +783,66 @@ int checkColor(
   return failures;
 }
 
+// Rank 0 of the layout only, with --background: the corner pixel, a miss on
+// every rank, is the ranks' backgrounds blended in linear space. 8-bit
+// results may be off by 1 LSB from rounding; float ones by about as much,
+// since the CUDA compositor carries fragments in 8 bits.
+int checkBackground(
+    anari::Device d, anari::Frame frame, const Options &opts, const Layout &l)
+{
+  if (opts.background == Background::None
+      || opts.colorType == ANARI_UNKNOWN || !compositable(opts.colorType))
+    return 0;
+  const float4 want = expectedBackground(opts.background, l);
+  auto fb = anari::map<void>(d, frame, "channel.color");
+  int failures = 0;
+  if (!fb.data || fb.pixelType != opts.colorType)
+    failures++; // reported by checkColor
+  else if (opts.colorType == ANARI_FLOAT32_VEC4) {
+    float c[4];
+    memcpy(c, fb.data, sizeof(c));
+    bool ok = true;
+    for (int i = 0; i < 4; i++)
+      ok &= std::fabs(c[i] - want[i]) <= 1.f / 255.f;
+    printf("%s: background (%.4f %.4f %.4f %.4f), want "
+           "(%.4f %.4f %.4f %.4f)\n",
+        ok ? "PASS" : "FAIL",
+        c[0],
+        c[1],
+        c[2],
+        c[3],
+        want.x,
+        want.y,
+        want.z,
+        want.w);
+    failures += !ok;
+  } else {
+    const bool srgb = opts.colorType == ANARI_UFIXED8_RGBA_SRGB;
+    const uint32_t v = *(const uint32_t *)fb.data;
+    int got[4], expect[4];
+    bool ok = true;
+    for (int i = 0; i < 4; i++) {
+      got[i] = (v >> (8 * i)) & 0xff;
+      expect[i] = toUnorm8(srgb && i < 3 ? linearToSrgb(want[i]) : want[i]);
+      ok &= std::abs(got[i] - expect[i]) <= 1;
+    }
+    printf("%s: background (%d %d %d %d), want (%d %d %d %d)%s\n",
+        ok ? "PASS" : "FAIL",
+        got[0],
+        got[1],
+        got[2],
+        got[3],
+        expect[0],
+        expect[1],
+        expect[2],
+        expect[3],
+        srgb ? " sRGB" : "");
+    failures += !ok;
+  }
+  anari::unmap(d, frame, "channel.color");
+  return failures;
+}
+
 // Rank 0 of the layout only, with --depth: the composited depth is the
 // nearest hit across all ranks. Each rank's sphere center must show that
 // sphere's depth: other ranks either miss there (their +inf must not win) or,
@@ -876,7 +1029,8 @@ int main(int argc, char **argv)
   Layout firstLayout = makeLayout(opts.firstComm.value_or(opts.comm));
 
   Scene scene = buildScene(d,
-      buildWorld(d, opts.twoFrames() ? firstLayout : finalLayout));
+      buildWorld(d, opts.twoFrames() ? firstLayout : finalLayout),
+      opts.background);
   const FrameState finalState{
       kImageSize, opts.colorType, opts.depth, opts.callback, &finalLayout};
   auto frame = anari::newObject<anari::Frame>(d);
@@ -943,6 +1097,7 @@ int main(int argc, char **argv)
 
   if (finalLayout.rank == 0) {
     failures += checkColor(d, frame, opts, finalLayout);
+    failures += checkBackground(d, frame, opts, finalLayout);
     failures += opts.depth ? checkDepth(d, frame, finalLayout.size)
                            : checkDepthRefused(d, frame);
   } else
