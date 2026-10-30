@@ -123,6 +123,7 @@ endforeach()
 # handles, after compositing; not called once unset.
 ptc_add_smoke_tests(callback --color ufixed8 --callback)
 ptc_add_smoke_tests(callback_resize --color ufixed8 --resize --depth --callback)
+ptc_add_smoke_tests(callback_unset_all --color ufixed8 --unset-all --callback)
 
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.

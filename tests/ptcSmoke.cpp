@@ -613,11 +613,16 @@ int checkDepthRefused(anari::Device d, anari::Frame frame)
 // color must already be there: mapping it is legal inside the callback.
 void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
 {
-  auto &ctx = g_callback;
+  if (userData != &g_callback) {
+    printf("FAIL: frame completion callback got the wrong user data\n");
+    g_callback.calls++;
+    g_callback.failures++;
+    return;
+  }
+  // from here on, everything is reached through the app's user data
+  auto &ctx = *(CallbackContext *)userData;
   ctx.calls++;
   Checker c{ctx.rank};
-  c.expect(userData == &ctx,
-      "frame completion callback got the wrong user data");
   c.expect(d == ctx.device,
       "frame completion callback got a device handle that is not the ptc "
       "device");
@@ -717,6 +722,7 @@ int main(int argc, char **argv)
     anari::render(d, frame);
     anari::wait(d, frame);
     renders++;
+    g_callback.rendering = nullptr; // `first` goes out of scope
     if (rank == 0)
       failures += checkFirstFrame(d, frame, first);
     changeParameters(d, frame, scene, first, finalState, opts.unsetAll);
