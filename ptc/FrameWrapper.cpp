@@ -191,19 +191,21 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
     }
     m_reportStatus(ANARI_SEVERITY_WARNING,
         m_bufferColorType != ANARI_UNKNOWN
-            ? "cannot map 'channel.color': the frame has not been rendered"
+            ? "cannot map 'channel.color': the frame has not been rendered "
+              "with a non-empty 'size'"
             : "cannot map 'channel.color': the frame was rendered without "
               "a 'channel.color' parameter");
   } else if (channel == "channel.depth") {
-    if (m_committed.depthEnabled && m_depth) {
+    if (m_renderedDepthEnabled && m_depth) {
       *pixelType = ANARI_FLOAT32;
       return m_depth;
     }
     m_reportStatus(ANARI_SEVERITY_WARNING,
-        m_committed.depthEnabled
-            ? "cannot map 'channel.depth': the frame has not been rendered"
-            : "cannot map 'channel.depth': the frame's 'channel.depth' "
-              "parameter is not set to ANARI_FLOAT32");
+        m_renderedDepthEnabled
+            ? "cannot map 'channel.depth': the frame has not been rendered "
+              "with a non-empty 'size'"
+            : "cannot map 'channel.depth': the frame was rendered without "
+              "its 'channel.depth' parameter set to ANARI_FLOAT32");
   } else
     std::cout << "unsupported mapping channel " << _channel << std::endl;
 
@@ -235,12 +237,7 @@ void FrameWrapper::updateBuffers()
   if (size == m_bufferSize && colorType == m_bufferColorType)
     return;
 
-  cleanup();
-  free(m_color);
-  free(m_depth);
-  m_color = nullptr;
-  m_depth = nullptr;
-
+  freeBuffers();
   m_bufferSize = size;
   m_bufferColorType = colorType;
 
@@ -250,12 +247,30 @@ void FrameWrapper::updateBuffers()
   const size_t numPixels = size_t(size.x) * size.y;
   m_color = malloc(numPixels * colorPixelSize(colorType));
   m_depth = (float *)malloc(numPixels * sizeof(float));
-  allocate();
+  try {
+    allocate();
+  } catch (...) {
+    // don't leave buffers that look ready to composite into
+    freeBuffers();
+    throw;
+  }
+}
+
+void FrameWrapper::freeBuffers()
+{
+  cleanup();
+  free(m_color);
+  free(m_depth);
+  m_color = nullptr;
+  m_depth = nullptr;
+  m_bufferSize = {0u, 0u};
+  m_bufferColorType = ANARI_UNKNOWN;
 }
 
 void FrameWrapper::renderFrame()
 {
   updateBuffers();
+  m_renderedDepthEnabled = m_committed.depthEnabled;
   anariRenderFrame(m_device, m_frame);
   anariFrameReady(m_device, m_frame, ANARI_WAIT);
   // Every rank sees the same commits, so all of them skip or composite.

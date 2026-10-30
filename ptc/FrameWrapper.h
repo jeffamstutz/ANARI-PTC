@@ -111,6 +111,8 @@ namespace ptc {
     /*! (re)allocates the buffers if the committed size or color type
         differs from what they were allocated for */
     void updateBuffers();
+    /*! frees all buffers; afterwards they are empty, for no color type */
+    void freeBuffers();
     /*! allocates the subclass's resources for m_bufferSize and
         m_bufferColorType; only called with a non-empty size */
     virtual void allocate() = 0;
@@ -138,6 +140,9 @@ namespace ptc {
     // transparent black input, so depth composites.
     anari::math::uint2 m_bufferSize{0u, 0u};
     ANARIDataType m_bufferColorType{ANARI_UNKNOWN};
+    // m_committed.depthEnabled at the last render: whether its composited
+    // depth may be mapped
+    bool m_renderedDepthEnabled{false};
 
     float *m_depth = nullptr;
     void  *m_color = nullptr;

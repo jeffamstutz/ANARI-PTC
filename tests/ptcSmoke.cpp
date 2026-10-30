@@ -53,6 +53,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -73,8 +74,7 @@ struct Options
   ANARIDataType colorType{ANARI_UFIXED8_RGBA_SRGB};
   bool depth{false};
   bool resize{false};
-  bool hasFirstColor{false};
-  ANARIDataType firstColorType{ANARI_UNKNOWN};
+  std::optional<ANARIDataType> firstColorType;
   bool unsetAll{false};
   bool uncommitted{false};
   bool invertCheck{false};
@@ -82,7 +82,7 @@ struct Options
 
   bool twoFrames() const
   {
-    return resize || hasFirstColor || unsetAll;
+    return resize || firstColorType || unsetAll;
   }
 };
 
@@ -147,9 +147,10 @@ bool parseArgs(int argc, char **argv, Options &opts)
       if (!parseColorType(argv[++i], opts.colorType))
         return false;
     } else if (arg == "--first-color") {
-      opts.hasFirstColor = true;
-      if (!parseColorType(argv[++i], opts.firstColorType))
+      ANARIDataType type;
+      if (!parseColorType(argv[++i], type))
         return false;
+      opts.firstColorType = type;
     } else if (arg == "--depth")
       opts.depth = true;
     else if (arg == "--resize")
@@ -603,12 +604,12 @@ int main(int argc, char **argv)
   failures += checkDeviceConformance(lib, d, rank);
 
   const Scene scene = buildScene(d, buildWorld(d, rank, size));
-  const FrameState final{kImageSize, opts.colorType, opts.depth};
+  const FrameState finalState{kImageSize, opts.colorType, opts.depth};
   auto frame = anari::newObject<anari::Frame>(d);
 
   if (opts.twoFrames()) {
     const FrameState first{opts.resize ? kImageSize / 2u : kImageSize,
-        opts.hasFirstColor ? opts.firstColorType : opts.colorType,
+        opts.firstColorType.value_or(opts.colorType),
         !opts.depth};
     setAllParameters(d, frame, scene, first);
     anari::commitParameters(d, frame);
@@ -616,9 +617,9 @@ int main(int argc, char **argv)
     anari::wait(d, frame);
     if (rank == 0)
       failures += checkFirstFrame(d, frame, first);
-    changeParameters(d, frame, scene, first, final, opts.unsetAll);
+    changeParameters(d, frame, scene, first, finalState, opts.unsetAll);
   } else {
-    setAllParameters(d, frame, scene, final);
+    setAllParameters(d, frame, scene, finalState);
     anari::commitParameters(d, frame);
   }
 
