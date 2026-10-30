@@ -165,8 +165,15 @@ namespace ptc {
   void CUDAFrameWrapper::createCompositor(MPI_Comm comm)
   {
     m_deepComp = std::make_unique<dc::Compositor>(1, comm);
-    // picks a GPU by this rank's place among the ranks of 'comm' on its node
-    m_deepComp->affinitizeGPU();
+    // The first compositor picks a GPU by this rank's place among the ranks
+    // of 'comm' on its node; later ones (after an mpiCommunicator change)
+    // keep that GPU instead of moving the frame to another one.
+    if (m_gpu < 0)
+      m_gpu = m_deepComp->affinitizeGPU();
+    else {
+      m_deepComp->affinitizedGPU = m_gpu;
+      cudaSetDevice(m_gpu);
+    }
   }
 
   void CUDAFrameWrapper::destroyCompositor()

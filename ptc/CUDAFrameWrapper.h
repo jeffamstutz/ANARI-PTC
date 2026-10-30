@@ -41,6 +41,8 @@ namespace ptc {
     void destroyCompositor() override;
 
     std::unique_ptr<dc::Compositor> m_deepComp;
+    /*! the GPU the first compositor picked; -1 before that */
+    int m_gpu{-1};
     /*! composited depth (rank 0), before it is copied to m_depth */
     float *d_depth_out{nullptr};
   };

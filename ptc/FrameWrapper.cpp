@@ -98,7 +98,14 @@ void FrameWrapper::setParameter(
     // Never forwarded: ptc implements KHR_DATA_PARALLEL_MPI. The value is a
     // pointer to the app's MPI_Comm, dereferenced at the next commit; a null
     // pointer or a wrong type reads as unset (MPI_COMM_WORLD).
-    m_pendingComm = type == ANARI_VOID_POINTER ? (const MPI_Comm *)mem : nullptr;
+    if (type != ANARI_VOID_POINTER) {
+      // warn: falling back to MPI_COMM_WORLD on some ranks only would hang
+      m_reportStatus(ANARI_SEVERITY_WARNING,
+          "'mpiCommunicator' must be ANARI_VOID_POINTER (a pointer to an "
+          "MPI_Comm); using MPI_COMM_WORLD");
+    }
+    m_pendingComm =
+        type == ANARI_VOID_POINTER ? (const MPI_Comm *)mem : nullptr;
     m_pendingCommChanged = true;
     return;
   }
@@ -197,19 +204,22 @@ void FrameWrapper::commitParameters()
   const MPI_Comm comm = m_pendingComm ? *m_pendingComm : MPI_COMM_WORLD;
   m_pendingComm = nullptr;
   m_pendingCommChanged = false;
-  if (comm == MPI_COMM_NULL) {
-    throw std::runtime_error(
-        "'mpiCommunicator' points to MPI_COMM_NULL; the frame keeps "
-        "compositing over its previous communicator");
-  }
   setCommunicator(comm);
+  if (comm == MPI_COMM_NULL) {
+    // e.g. a rank left out of an MPI_Comm_split; it still took part in
+    // tearing down the old communicator above, with the ranks that stayed
+    throw std::runtime_error(
+        "'mpiCommunicator' points to MPI_COMM_NULL: the frame cannot be "
+        "rendered until another communicator is committed");
+  }
 }
 
 void FrameWrapper::setCommunicator(MPI_Comm comm)
 {
   if (m_comm != MPI_COMM_NULL) {
     int result = MPI_UNEQUAL;
-    MPI_Comm_compare(m_comm, comm, &result);
+    if (comm != MPI_COMM_NULL)
+      MPI_Comm_compare(m_comm, comm, &result);
     // same ranks in the same order: the compositor works as it is
     if (result == MPI_IDENT || result == MPI_CONGRUENT)
       return;
@@ -222,6 +232,8 @@ void FrameWrapper::setCommunicator(MPI_Comm comm)
     // the buffers stay mappable until the next render reallocates them
     m_reallocate = true;
   }
+  if (comm == MPI_COMM_NULL)
+    return;
 
   MPI_Comm dup = MPI_COMM_NULL;
   MPI_Comm_dup(comm, &dup);

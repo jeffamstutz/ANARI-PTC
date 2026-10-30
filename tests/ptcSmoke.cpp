@@ -14,7 +14,7 @@
 //                 [--depth]
 //                 [--resize] [--first-color <type>] [--unset-all]
 //                 [--uncommitted] [--callback] [--invert-check]
-//                 [--comm world|split] [--first-comm world|split]
+//                 [--comm <comm>] [--first-comm <comm>]
 //                 [--expect-library <path>]
 //
 //   --color           frame color channel type (default ufixed8); 'none'
@@ -43,10 +43,12 @@
 //                     used to test the harness's failure path
 //   --comm            communicator the frame composites over (default
 //                     world): 'world' leaves mpiCommunicator unset (so
-//                     MPI_COMM_WORLD); 'split' splits MPI_COMM_WORLD into two
-//                     halves (needs an even number of ranks) and sets
-//                     mpiCommunicator. Each half renders its own image, with
-//                     colors picked by world rank, and its rank 0 checks it.
+//                     MPI_COMM_WORLD); 'split' splits MPI_COMM_WORLD into
+//                     its lower and upper half, 'interleaved' into its even
+//                     and odd ranks (both need an even number of ranks), and
+//                     sets mpiCommunicator. Each part renders its own image,
+//                     with colors picked by world rank, and its rank 0
+//                     checks it.
 //   --first-comm      render a first frame over this communicator, then
 //                     change it to --comm (going back to 'world' unsets
 //                     mpiCommunicator)
@@ -56,8 +58,9 @@
 //
 // With --resize, --first-color, --first-comm or --unset-all, a first frame is
 // rendered and its color map is checked, then the frame's parameters change and
-// the full checks run on the second frame. The first frame also has the opposite
-// channel.depth setting, so depth is enabled or disabled between frames too.
+// the full checks run on the second frame. The first frame also has the
+// opposite channel.depth setting, so depth is enabled or disabled between
+// frames too.
 // Without --unset-all, parameters that go away are unset one by one.
 //
 // Every rank exits non-zero if any rank recorded a failure.
@@ -78,22 +81,30 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 using namespace anari::math;
 
 namespace {
 
+// How the ranks are split into the communicators frames composite over
+enum class CommSplit
+{
+  World, // no split: mpiCommunicator unset
+  Halves, // lower and upper half of MPI_COMM_WORLD
+  Interleaved // even and odd ranks of MPI_COMM_WORLD
+};
+
 // The communicator a frame composites over, and this rank's place in it.
 struct Layout
 {
-  // whether mpiCommunicator is set (to `comm`); otherwise MPI_COMM_WORLD
-  bool split{false};
+  CommSplit split{CommSplit::World};
   MPI_Comm comm{MPI_COMM_WORLD};
   int rank{0};
   int size{1};
-  // world rank of this communicator's rank 0, which picks the colors: each
-  // half of a split renders different ones
-  int colorBase{0};
+  // world rank of each rank of `comm`; it picks that rank's color, so each
+  // part of a split renders different ones
+  std::vector<int> worldRanks;
 };
 
 // The frame parameters ptc tracks. color == ANARI_UNKNOWN means unset.
@@ -116,13 +127,13 @@ struct Options
   bool uncommitted{false};
   bool callback{false};
   bool invertCheck{false};
-  bool splitComm{false};
-  std::optional<bool> firstSplitComm;
+  CommSplit comm{CommSplit::World};
+  std::optional<CommSplit> firstComm;
   std::string expectLibrary;
 
   bool twoFrames() const
   {
-    return resize || firstColorType || firstSplitComm || unsetAll;
+    return resize || firstColorType || firstComm || unsetAll;
   }
 };
 
@@ -185,12 +196,14 @@ bool compositable(ANARIDataType type)
       || type == ANARI_UFIXED8_RGBA_SRGB || type == ANARI_FLOAT32_VEC4;
 }
 
-bool parseComm(const std::string &comm, bool &split)
+bool parseComm(const std::string &comm, CommSplit &split)
 {
   if (comm == "world")
-    split = false;
+    split = CommSplit::World;
   else if (comm == "split")
-    split = true;
+    split = CommSplit::Halves;
+  else if (comm == "interleaved")
+    split = CommSplit::Interleaved;
   else {
     fprintf(stderr, "unknown communicator '%s'\n", comm.c_str());
     return false;
@@ -230,13 +243,13 @@ bool parseArgs(int argc, char **argv, Options &opts)
     else if (arg == "--invert-check")
       opts.invertCheck = true;
     else if (arg == "--comm") {
-      if (!parseComm(argv[++i], opts.splitComm))
+      if (!parseComm(argv[++i], opts.comm))
         return false;
     } else if (arg == "--first-comm") {
-      bool split;
+      CommSplit split;
       if (!parseComm(argv[++i], split))
         return false;
-      opts.firstSplitComm = split;
+      opts.firstComm = split;
     }
     else if (arg == "--expect-library")
       opts.expectLibrary = argv[++i];
@@ -248,29 +261,32 @@ bool parseArgs(int argc, char **argv, Options &opts)
   return true;
 }
 
-// MPI_COMM_WORLD, or (split) a new communicator for this rank's half of it.
-// Every call splits anew, so two split layouts have different communicators
-// with the same ranks.
-Layout makeLayout(bool split)
+// MPI_COMM_WORLD, or a new communicator for this rank's part of it. Every
+// call splits anew, so two layouts with the same split have different but
+// congruent communicators.
+Layout makeLayout(CommSplit split)
 {
   Layout l;
+  l.split = split;
   int worldRank = 0, worldSize = 1;
   MPI_Comm_rank(MPI_COMM_WORLD, &worldRank);
   MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
-  if (split) {
-    const int half = worldSize / 2;
-    l.split = true;
-    MPI_Comm_split(MPI_COMM_WORLD, worldRank / half, worldRank, &l.comm);
-    l.colorBase = worldRank / half * half;
+  if (split != CommSplit::World) {
+    const int part = split == CommSplit::Halves ? worldRank / (worldSize / 2)
+                                                : worldRank % 2;
+    MPI_Comm_split(MPI_COMM_WORLD, part, worldRank, &l.comm);
   }
   MPI_Comm_rank(l.comm, &l.rank);
   MPI_Comm_size(l.comm, &l.size);
+  l.worldRanks.resize(l.size);
+  MPI_Allgather(
+      &worldRank, 1, MPI_INT, l.worldRanks.data(), 1, MPI_INT, l.comm);
   return l;
 }
 
 void freeLayout(Layout &l)
 {
-  if (l.split)
+  if (l.split != CommSplit::World)
     MPI_Comm_free(&l.comm);
 }
 
@@ -413,7 +429,7 @@ int checkDeviceConformance(anari::Library lib, anari::Device d, int rank)
 // Color of rank r of the layout's communicator
 float3 sphereColor(const Layout &l, int r)
 {
-  return kColors[(l.colorBase + r) % kNumColors];
+  return kColors[l.worldRanks[r] % kNumColors];
 }
 
 // This rank's spheres, placed by its rank in the layout's communicator
@@ -543,7 +559,7 @@ void setAllParameters(
         "frameCompletionCallbackUserData",
         (void *)&g_callback);
   }
-  if (state.layout->split)
+  if (state.layout->split != CommSplit::World)
     setCommunicator(d, frame, *state.layout);
 }
 
@@ -570,9 +586,9 @@ void changeParameters(anari::Device d,
       anari::unsetParameter(d, frame, "channel.depth");
     else if (!prev.depth)
       anari::setParameter(d, frame, "channel.depth", ANARI_FLOAT32);
-    if (next.layout->split)
+    if (next.layout->split != CommSplit::World)
       setCommunicator(d, frame, *next.layout);
-    else if (prev.layout->split)
+    else if (prev.layout->split != CommSplit::World)
       anari::unsetParameter(d, frame, "mpiCommunicator");
   }
   commitFrame(d, frame);
@@ -674,11 +690,11 @@ int checkColor(
   return failures;
 }
 
-// Rank 0 of the layout only, with --depth: the composited depth is the nearest hit across
-// all ranks. Each rank's sphere center must show that sphere's depth: other
-// ranks either miss there (their +inf must not win) or, behind the last
-// rank's sphere, hit farther away. The background corner, where no rank hits,
-// must be +inf.
+// Rank 0 of the layout only, with --depth: the composited depth is the
+// nearest hit across all ranks. Each rank's sphere center must show that
+// sphere's depth: other ranks either miss there (their +inf must not win) or,
+// behind the last rank's sphere, hit farther away. The background corner,
+// where no rank hits, must be +inf.
 int checkDepth(anari::Device d, anari::Frame frame, int size)
 {
   int failures = 0;
@@ -848,15 +864,16 @@ int main(int argc, char **argv)
 
   failures += checkDeviceConformance(lib, d, rank);
 
-  if ((opts.splitComm || opts.firstSplitComm.value_or(false))
+  if ((opts.comm != CommSplit::World
+          || opts.firstComm.value_or(CommSplit::World) != CommSplit::World)
       && (size < 2 || size % 2)) {
-    printf("FAIL: rank %d: --comm split needs an even number of ranks\n", rank);
+    printf("FAIL: rank %d: splitting needs an even number of ranks\n", rank);
     failures++;
-    opts.splitComm = false;
-    opts.firstSplitComm.reset();
+    opts.comm = CommSplit::World;
+    opts.firstComm.reset();
   }
-  Layout finalLayout = makeLayout(opts.splitComm);
-  Layout firstLayout = makeLayout(opts.firstSplitComm.value_or(opts.splitComm));
+  Layout finalLayout = makeLayout(opts.comm);
+  Layout firstLayout = makeLayout(opts.firstComm.value_or(opts.comm));
 
   Scene scene = buildScene(d,
       buildWorld(d, opts.twoFrames() ? firstLayout : finalLayout));
@@ -881,7 +898,7 @@ int main(int argc, char **argv)
     g_callback.rendering = nullptr; // `first` goes out of scope
     if (firstLayout.rank == 0)
       failures += checkFirstFrame(d, frame, first);
-    if (firstLayout.split != finalLayout.split) {
+    if (firstLayout.worldRanks != finalLayout.worldRanks) {
       // spheres are placed and colored by rank in the frame's communicator
       anari::release(d, scene.world);
       scene.world = buildWorld(d, finalLayout);

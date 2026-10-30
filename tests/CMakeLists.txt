@@ -130,8 +130,8 @@ ptc_add_smoke_tests(callback_unset_all --color ufixed8 --unset-all --callback)
 
 # mpiCommunicator (ticket 07): MPI_COMM_WORLD split into two halves, each
 # compositing its own image to its own rank 0. Also switching communicators
-# between frames (back to 'world' unsets the parameter), and to a congruent
-# but different communicator.
+# between frames: back to 'world' (unsetting the parameter), to a congruent
+# but different communicator (kept), and to different ranks (torn down).
 set(PTC_SPLIT_RANKS RANKS 2 4)
 foreach(color ${PTC_TEST_COLORS})
   ptc_add_smoke_tests(${color}_split --color ${color} --comm split --depth
@@ -146,6 +146,9 @@ ptc_add_smoke_tests(split_to_split --first-comm split --comm split --resize
 ptc_add_smoke_tests(split_unset_all --first-comm split --comm world --unset-all
   --depth ${PTC_SPLIT_RANKS})
 ptc_add_smoke_tests(split_callback --comm split --callback ${PTC_SPLIT_RANKS})
+# on 2 ranks, halves and even/odd ranks are the same split
+ptc_add_smoke_tests(split_to_interleaved --first-comm split
+  --comm interleaved --depth RANKS 4)
 
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.

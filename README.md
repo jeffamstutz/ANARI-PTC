@@ -82,6 +82,12 @@ free its communicator after the commit.
   together. A communicator with the same ranks in the same order as the
   current one is kept as it is.
 - Unsetting `mpiCommunicator` goes back to `MPI_COMM_WORLD`.
+- A pointer to `MPI_COMM_NULL` (e.g. on a rank that `MPI_Comm_split` left
+  out) takes part in tearing down the frame's previous communicator, then
+  reports an error; the frame cannot be rendered until another
+  communicator is committed.
+- Releasing a frame is collective over its communicator: every rank of it
+  must release the frame.
 
 # Contributors
 

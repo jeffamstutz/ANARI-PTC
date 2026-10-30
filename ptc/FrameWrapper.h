@@ -136,7 +136,8 @@ namespace ptc {
 
     /*! makes the compositor composite over 'comm' (a copy of it), if it
         doesn't already composite over the same ranks; collective over
-        'comm' and over the communicator it replaces */
+        'comm' and over the communicator it replaces. MPI_COMM_NULL only
+        tears down the current compositor. */
     void setCommunicator(MPI_Comm comm);
 
     FrameWrapperNotificationHandler m_onObjectDestroy;
