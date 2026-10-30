@@ -117,3 +117,12 @@ severity: non-blocking
 - On CPU, if `allocate()` throws for float32, `updateBuffers()` now frees all
   buffers before rethrowing. The exception still escapes `anariRenderFrame`.
   Ticket 08 owns that.
+
+## Resolution (2026-10-30, with the maintainer)
+
+- **Item 1:** noted on ticket 13.
+- **Item 2:** resolved by 08. Those CPU float32 tests now run for real and pass.
+- **Items 3, 4 and 6:** confirmed as landed. The ticket text was stale, depth-only frames are supported, and map state is fixed at render.
+- **Item 5:** a commit-time wrong-type warning is added to ticket 14. 08's `isCompositableColorType` covers the `colorPixelSize` aside.
+- **Item 7:** informational.
+- **Item 8:** 08 fixed the exception escape.

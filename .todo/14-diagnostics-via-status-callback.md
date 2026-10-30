@@ -14,3 +14,4 @@
 - [ ] `frameCompletionCallback` fires even when the render failed, after the error is reported (decided 2026-10-30, followups/08 item 3)
 - [ ] When the detected `mpiexec` is Open MPI, the multi-rank ctest targets pass `--oversubscribe`, so 3-rank tests run on runners with fewer than 3 slots (decided 2026-10-30, followups/02 item 2)
 - [ ] Setting `channel.depth` to a type other than `ANARI_FLOAT32` warns at commit, instead of silently turning depth off (decided 2026-10-30, followups/04 item 5)
+- [ ] Setting `size` or `channel.color` with the wrong parameter type warns at commit, instead of silently counting as unset (decided 2026-10-30, followups/05 item 5)
