@@ -262,7 +262,8 @@ void FrameWrapper::updateBuffers()
   freeBuffers();
   if (!isCompositableColorType(colorType)) {
     // the same on every rank (all see the same commits), so no rank is left
-    // waiting in the compositor's collectives
+    // waiting in the compositor's collectives. Failures on only some ranks
+    // (e.g. out of memory) are reported, but the other ranks still hang.
     throw std::runtime_error(std::string("cannot composite 'channel.color' "
                                          "of type ")
         + anari::toString(colorType)

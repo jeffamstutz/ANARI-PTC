@@ -338,6 +338,7 @@ void PTCDevice::release(ANARIObject o)
       return;
 
     if (handleIsDevice(o)) {
+      // nothing may touch `this` after this, in here or in guarded()
       if (--m_refCount == 0)
         delete this;
       return;
@@ -406,7 +407,8 @@ const void *PTCDevice::getObjectInfo(ANARIDataType objectType,
     const char *infoName,
     ANARIDataType infoType)
 {
-  return guarded("anariGetObjectInfo", (const void *)nullptr, [&]() -> const void * {
+  const void *const onError = nullptr;
+  return guarded("anariGetObjectInfo", onError, [&]() -> const void * {
     initDevice();
     auto *info =
         m_ptd->getObjectInfo(objectType, objectSubtype, infoName, infoType);

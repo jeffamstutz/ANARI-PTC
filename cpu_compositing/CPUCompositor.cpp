@@ -348,8 +348,9 @@ namespace ptc {
     // ------------------------------------------------------------------
     enum { colorTag = 0, depthTag = 1 };
     const int elems = colorElementsPerPixel();
-    const size_t colorBytesPerPixel = format == ColorFormat::RGBA32F
-      ? 4*sizeof(float) : sizeof(uint32_t);
+    // both element types (uint32_t, float) are 4 bytes
+    static_assert(sizeof(uint32_t) == 4 && sizeof(float) == 4, "");
+    const size_t colorBytesPerPixel = size_t(elems) * 4;
     std::vector<MPI_Request> requests;
     MPI_Request request;
     if (mpi.rank == 0) {

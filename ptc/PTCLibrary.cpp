@@ -36,7 +36,7 @@ struct PTCLibrary : public anari::LibraryImpl
   const char **getDeviceExtensions(const char *deviceType) override;
 
  private:
-  void reportException(const char *entryPoint) noexcept;
+  void reportException(const char *entryPoint) const noexcept;
 
   std::mutex m_extensionsMutex;
   std::unique_ptr<ExtensionList> m_extensions; // built on first query
@@ -51,7 +51,7 @@ PTCLibrary::PTCLibrary(
 
 // No exception may escape through the C API: report it as an ERROR through
 // the library's status callback instead. Only call from a catch block.
-void PTCLibrary::reportException(const char *entryPoint) noexcept
+void PTCLibrary::reportException(const char *entryPoint) const noexcept
 {
   try {
     std::string msg = entryPoint;

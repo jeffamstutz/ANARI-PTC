@@ -519,7 +519,7 @@ int checkFirstFrame(anari::Device d, anari::Frame frame, const FrameState &state
 // Rank 0 only: probe the pixel at the center of each rank's sphere.
 int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int size)
 {
-  if (!compositable(opts.colorType) || opts.colorType == ANARI_UNKNOWN)
+  if (opts.colorType == ANARI_UNKNOWN || !compositable(opts.colorType))
     return checkColorRefused(d, frame, "final frame");
   int failures = 0;
   auto fb = anari::map<void>(d, frame, "channel.color");
