@@ -111,3 +111,12 @@ severity: non-blocking
 - Smells: the growing `if (name == ...)` cascade in `setParameter` and
   `unsetParameter`, and the new constructor argument threaded through 7
   places. Worth tidying before the ticket-16 port.
+
+## Resolution (2026-10-30, with the maintainer)
+
+- **Item 1:** the synchronous callback is the documented contract (16 README). Re-entrant render or commit from inside the callback is refused with an ERROR; this goes to ticket 14.
+- **Item 2:** firing on every rank is confirmed and documented in 16. Firing on a failed render is on ticket 14 (from followups/08).
+- **Item 3:** ptc always advertises `KHR_FRAME_COMPLETION_CALLBACK`; this goes to ticket 12.
+- **Item 4:** covered by the 01 decision that apps must release frames before the device (16 README).
+- **Item 5:** a check from inside the callback is added to ticket 13's first checkbox.
+- **Item 6:** a test for unsetting only the UserData is added to ticket 14. The smells are left for the 16 port.

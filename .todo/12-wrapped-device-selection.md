@@ -13,3 +13,4 @@
 - [ ] Wrapped library/device load failure is reported as `ANARI_SEVERITY_FATAL_ERROR`, not ERROR (decided 2026-10-30, followups/08 item 3)
 - [ ] The helide fallback is reported on both the device path and the library-level `getDeviceExtensions` path. Docs state that the library-level extension list reflects only `PTC_ANARI_LIBRARY` or the default, not the device parameter (decided 2026-10-30, followups/03 item 1)
 - [ ] Device `version` property reports ptc's own version, not the wrapped device's. `anariVersion.*` stays forwarded (decided 2026-10-30, followups/03 item 4)
+- [ ] ptc always lists `KHR_FRAME_COMPLETION_CALLBACK` in its device and library extension lists, because it implements the callback itself, whatever the wrapped device reports (decided 2026-10-30, followups/06 item 3)

@@ -15,3 +15,5 @@
 - [ ] When the detected `mpiexec` is Open MPI, the multi-rank ctest targets pass `--oversubscribe`, so 3-rank tests run on runners with fewer than 3 slots (decided 2026-10-30, followups/02 item 2)
 - [ ] Setting `channel.depth` to a type other than `ANARI_FLOAT32` warns at commit, instead of silently turning depth off (decided 2026-10-30, followups/04 item 5)
 - [ ] Setting `size` or `channel.color` with the wrong parameter type warns at commit, instead of silently counting as unset (decided 2026-10-30, followups/05 item 5)
+- [ ] Calling `anariRenderFrame` or `anariCommitParameters` on a frame from inside that frame's completion callback is refused with an ERROR status. Harness test covers it (decided 2026-10-30, followups/06 item 1)
+- [ ] Harness test: unsetting only `frameCompletionCallbackUserData` passes null to the still-set callback (followups/06 item 6)

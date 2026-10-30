@@ -9,7 +9,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] The current CUDA device seen by the app/wrapped device is unchanged after frame creation, commit and render
+- [ ] The current CUDA device seen by the app/wrapped device is unchanged after frame creation, commit and render, including when checked from inside the frame completion callback (followups/06 item 5)
 - [ ] One `prepare()` per frame
 - [ ] Non-root ranks skip the output copy
 - [ ] Harness passes on 2 ranks with 2 GPUs and with both ranks on one GPU
