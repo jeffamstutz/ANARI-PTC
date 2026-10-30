@@ -2,7 +2,9 @@
 //
 // Multi-rank smoke test for the ptc device. Rank r renders one sphere at a
 // distinct x position with a distinct color through ptc (wrapping helide);
-// rank 0 checks that every sphere shows up in the composited image.
+// rank 0 checks that every sphere shows up in the composited image. Every rank
+// but the last also renders a hidden sphere straight behind the last rank's,
+// so that pixel has hits from all ranks and the nearest one must win.
 //
 // Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
 // required ANARI 1.1 device properties.
@@ -247,10 +249,14 @@ int checkDeviceConformance(anari::Library lib, anari::Device d, int rank)
 
 anari::World buildWorld(anari::Device d, int rank, int size)
 {
-  float3 pos(sphereX(rank, size), 0.f, 0.f);
+  // [0]: this rank's visible sphere; [1]: hidden behind the last rank's
+  // sphere, at a different depth on each rank
+  float3 pos[2] = {{sphereX(rank, size), 0.f, 0.f},
+      {sphereX(size - 1, size), 0.f, -1.f - 0.5f * rank}};
+  const int numSpheres = rank == size - 1 ? 1 : 2;
   float3 col = kColors[rank % kNumColors];
   auto geom = anari::newObject<anari::Geometry>(d, "sphere");
-  anari::setParameterArray1D(d, geom, "vertex.position", &pos, 1);
+  anari::setParameterArray1D(d, geom, "vertex.position", pos, numSpheres);
   anari::setParameter(d, geom, "radius", kSphereRadius);
   anari::commitParameters(d, geom);
   auto mat = anari::newObject<anari::Material>(d, "matte");
@@ -347,9 +353,10 @@ int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int siz
 }
 
 // Rank 0 only, with --depth: the composited depth is the nearest hit across
-// all ranks. Each rank's sphere center must show that sphere's depth (no
-// other rank hits there, so their infinite depth must not win), and the
-// background corner, where no rank hits, must be +inf.
+// all ranks. Each rank's sphere center must show that sphere's depth: other
+// ranks either miss there (their +inf must not win) or, behind the last
+// rank's sphere, hit farther away. The background corner, where no rank hits,
+// must be +inf.
 int checkDepth(anari::Device d, anari::Frame frame, int size)
 {
   int failures = 0;

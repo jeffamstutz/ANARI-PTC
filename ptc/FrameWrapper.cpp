@@ -175,10 +175,11 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
   if (channel == "channel.color") {
     *pixelType = m_currentColorType;
     return m_color;
-  } else if (channel == "channel.depth" && m_depthEnabled && m_depth) {
-    *pixelType = ANARI_FLOAT32;
-    return m_depth;
   } else if (channel == "channel.depth") {
+    if (m_depthEnabled && m_depth) {
+      *pixelType = ANARI_FLOAT32;
+      return m_depth;
+    }
     m_reportStatus(ANARI_SEVERITY_WARNING,
         m_depthEnabled
             ? "cannot map 'channel.depth': the frame has not been rendered"

@@ -450,6 +450,8 @@ namespace dc {
             nextClosestFragment = fragment;
         }
       }
+      // 1e20 marks fragments already consumed below; misses (at
+      // DC_NO_HIT_Z) still blend in, they carry the background color
       if (nextClosestFragment == nullptr || float(nextClosestFragment->z) >= 1e20f)
         break;
       // fragments come out nearest first, so the first one is the depth
