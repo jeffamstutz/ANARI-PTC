@@ -17,6 +17,7 @@
 #include "FrameWrapper.h"
 // std
 #include <cstring>
+#include <string>
 #include <string_view>
 // anari
 #include <anari/frontend/type_utility.h>
@@ -24,15 +25,17 @@
 
 namespace ptc {
 
-// GPU kernels ////////////////////////////////////////////////////////////////
-
 // FrameWrapper definitions ///////////////////////////////////////////////////
 
 FrameWrapper::FrameWrapper(ANARIDevice d,
     ANARIFrame f,
     FrameWrapperNotificationHandler onObjectDestroy,
+    FrameWrapperStatusHandler reportStatus,
     MPI_Comm comm)
-    : m_onObjectDestroy(onObjectDestroy), m_device(d), m_frame(f)
+    : m_onObjectDestroy(onObjectDestroy),
+      m_reportStatus(reportStatus),
+      m_device(d),
+      m_frame(f)
 {
   MPI_Comm_rank(comm, &m_rank);
   anariRetain(m_device, m_device);
@@ -61,19 +64,29 @@ void FrameWrapper::setParameter(
     m_newSize = bit_cast<anari::math::uint2>(type, mem);
   else if (type == ANARI_DATA_TYPE && name == "channel.color") {
     m_newColorType = bit_cast<ANARIDataType>(type, mem);
-  } else if (type == ANARI_DATA_TYPE && name == "channel.depth")
-    return; // we don't want the app to turn off the depth channel
+  } else if (name == "channel.depth") {
+    // Never forwarded: the wrapped frame keeps rendering FLOAT32 depth for
+    // compositing. Only FLOAT32 is a valid depth type (as in helide).
+    m_newDepthEnabled = type == ANARI_DATA_TYPE
+        && bit_cast<ANARIDataType>(type, mem) == ANARI_FLOAT32;
+    return;
+  }
 
   anariSetParameter(m_device, m_frame, _name, type, mem);
 }
 
-void FrameWrapper::unsetParameter(const char *name)
+void FrameWrapper::unsetParameter(const char *_name)
 {
-  anariUnsetParameter(m_device, m_frame, name);
+  if (std::string_view(_name) == "channel.depth") {
+    m_newDepthEnabled = false; // see setParameter()
+    return;
+  }
+  anariUnsetParameter(m_device, m_frame, _name);
 }
 
 void FrameWrapper::unsetAllParameters()
 {
+  m_newDepthEnabled = false;
   anariUnsetAllParameters(m_device, m_frame);
   anari::setParameter(m_device, m_frame, "channel.depth", ANARI_FLOAT32);
 }
@@ -126,6 +139,7 @@ void FrameWrapper::unmapParameterArray(const char *name)
 
 void FrameWrapper::commitParameters()
 {
+  m_depthEnabled = m_newDepthEnabled;
   anariCommitParameters(m_device, m_frame);
 }
 
@@ -161,9 +175,15 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
   if (channel == "channel.color") {
     *pixelType = m_currentColorType;
     return m_color;
-  } else if (channel == "channel.depth") {
+  } else if (channel == "channel.depth" && m_depthEnabled && m_depth) {
     *pixelType = ANARI_FLOAT32;
     return m_depth;
+  } else if (channel == "channel.depth") {
+    m_reportStatus(ANARI_SEVERITY_WARNING,
+        m_depthEnabled
+            ? "cannot map 'channel.depth': the frame has not been rendered"
+            : "cannot map 'channel.depth': the frame's 'channel.depth' "
+              "parameter is not set to ANARI_FLOAT32");
   } else
     std::cout << "unsupported mapping channel " << _channel << std::endl;
 

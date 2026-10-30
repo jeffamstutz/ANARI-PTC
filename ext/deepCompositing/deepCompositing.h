@@ -30,6 +30,10 @@
 
 #define DEFAULT_MAX_FRAGS_PER_PIXEL 3
 
+/* Fragment z is clamped to this, so anything at or beyond it (in
+   particular +inf, 'nothing hit') counts as no hit */
+#define DC_NO_HIT_Z 1e19f
+
 namespace dc {
 
   class TwoPassInterface;
@@ -74,14 +78,14 @@ namespace dc {
         g(encode8(color.y)),
         b(encode8(color.z)),
         a(encode8(alpha)),
-        z(min(z,1e19f))
+        z(min(z,DC_NO_HIT_Z))
     {}
     inline __device__ Fragment(float z, const float4 &color)
       : r(encode8(color.x)),
         g(encode8(color.y)),
         b(encode8(color.z)),
         a(encode8(color.w)),
-        z(min(z,1e19f))
+        z(min(z,DC_NO_HIT_Z))
     {}
 
     inline __device__ __host__ float4 getRGBA() const {
@@ -108,10 +112,10 @@ namespace dc {
     inline// __device__
     Fragment() = default;
     inline __device__ Fragment(float z, const float3 &color, const float alpha=1.f)
-      : r(color.x),g(color.y),b(color.z),a(alpha),z(min(z,1e19f))
+      : r(color.x),g(color.y),b(color.z),a(alpha),z(min(z,DC_NO_HIT_Z))
     {}
     inline __device__ Fragment(float z, const float4 &color)
-      : r(color.x),g(color.y),b(color.z),a(color.w),z(min(z,1e19f))
+      : r(color.x),g(color.y),b(color.z),a(color.w),z(min(z,DC_NO_HIT_Z))
     {}
     inline __device__ __host__ float4 getRGBA() const { return make_float4(r,g,b,a); }
     inline __device__ __host__ float getAlpha() const { return a; }
@@ -178,10 +182,14 @@ namespace dc {
 
     /*! run the actual mpi+cuda compositing stage, using the 'fbSize',
         'pixelCounters' and 'pixelOffsets' values that the Interface
-        has set up. Composited values will get written to
-        'whereToWriteFinalPixels' on rank 0 (where this value must not
-        be null); all other ranks should pass null here */
-    void finish(void *whereToWriteFinalPixels, bool useFloat4);
+        has set up. Composited colors will get written to
+        'whereToWriteFinalPixels', and per-pixel depth of the closest
+        fragment (+inf where there is none) to 'whereToWriteFinalDepth',
+        on rank 0 (where these values must not be null); all other
+        ranks should pass null here */
+    void finish(void *whereToWriteFinalPixels,
+                float *whereToWriteFinalDepth,
+                bool useFloat4);
 
     /*! resize the (device) frame buffer to given size */
     void resize(const int2 &size);

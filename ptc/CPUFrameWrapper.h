@@ -27,6 +27,7 @@ namespace ptc {
     CPUFrameWrapper(ANARIDevice d,
                     ANARIFrame f,
                     FrameWrapperNotificationHandler onObjectDestroy,
+                    FrameWrapperStatusHandler reportStatus,
                     MPI_Comm = MPI_COMM_WORLD);
     virtual ~CPUFrameWrapper();
     

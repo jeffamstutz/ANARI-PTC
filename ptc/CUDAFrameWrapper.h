@@ -27,6 +27,7 @@ namespace ptc {
     CUDAFrameWrapper(ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
+                     FrameWrapperStatusHandler reportStatus,
                      MPI_Comm = MPI_COMM_WORLD);
     virtual ~CUDAFrameWrapper();
     
@@ -36,6 +37,8 @@ namespace ptc {
     void cleanup() override;
     
     dc::Compositor m_deepComp;
+    /*! composited depth (rank 0), before it is copied to m_depth */
+    float *d_depth_out{nullptr};
   };
 
 }

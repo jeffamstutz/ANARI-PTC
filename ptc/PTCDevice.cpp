@@ -100,7 +100,10 @@ ANARIFrame PTCDevice::newFrame()
 #endif
   auto *fw = new FrameWrapperT((ANARIDevice)m_ptd,
       m_ptd->newFrame(),
-      [=](const void *f) { this->removeFrameWrapper((FrameWrapper *)f); });
+      [=](const void *f) { this->removeFrameWrapper((FrameWrapper *)f); },
+      [=](ANARIStatusSeverity severity, const char *msg) {
+        this->reportMessage(severity, "%s", msg);
+      });
   m_frameWrappers.push_back(fw);
   return (ANARIFrame)fw;
 }

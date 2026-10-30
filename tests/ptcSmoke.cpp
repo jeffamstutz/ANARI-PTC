@@ -11,7 +11,8 @@
 //                 [--expect-library <path>]
 //
 //   --color           frame color channel type (default ufixed8)
-//   --depth           also request and check channel.depth
+//   --depth           enable channel.depth and check the composited depth;
+//                     without it, check that mapping depth is refused
 //   --invert-check    expect the wrong colors, so the pixel check must fail;
 //                     used to test the harness's failure path
 //   --expect-library  fail unless the loaded libanari_library_ptc is this
@@ -53,6 +54,13 @@ const uint2 kImageSize(128, 64);
 const float kCameraHeight = 1.5f;
 const float kAspect = float(kImageSize.x) / kImageSize.y;
 const int kNumColors = int(sizeof(kColors) / sizeof(kColors[0]));
+// Every sphere has radius 0.3 and its center at z=0; the camera is at z=5
+// looking down -z, so the depth at a sphere's center pixel is 4.7.
+const float kSphereRadius = 0.3f;
+const float kCameraZ = 5.f;
+
+// Status messages at WARNING or worse that mention channel.depth
+int g_depthWarnings = 0;
 
 void statusFunc(const void *,
     ANARIDevice,
@@ -62,8 +70,10 @@ void statusFunc(const void *,
     ANARIStatusCode,
     const char *msg)
 {
-  if (sev <= ANARI_SEVERITY_WARNING)
+  if (sev <= ANARI_SEVERITY_WARNING) {
     fprintf(stderr, "[anari] %s\n", msg);
+    g_depthWarnings += std::string(msg).find("channel.depth") != std::string::npos;
+  }
 }
 
 bool parseArgs(int argc, char **argv, Options &opts)
@@ -241,7 +251,7 @@ anari::World buildWorld(anari::Device d, int rank, int size)
   float3 col = kColors[rank % kNumColors];
   auto geom = anari::newObject<anari::Geometry>(d, "sphere");
   anari::setParameterArray1D(d, geom, "vertex.position", &pos, 1);
-  anari::setParameter(d, geom, "radius", 0.3f);
+  anari::setParameter(d, geom, "radius", kSphereRadius);
   anari::commitParameters(d, geom);
   auto mat = anari::newObject<anari::Material>(d, "matte");
   anari::setParameter(d, mat, "color", col);
@@ -265,7 +275,7 @@ anari::World buildWorld(anari::Device d, int rank, int size)
 anari::Frame buildFrame(anari::Device d, const Options &opts, anari::World w)
 {
   auto cam = anari::newObject<anari::Camera>(d, "orthographic");
-  anari::setParameter(d, cam, "position", float3(0, 0, 5));
+  anari::setParameter(d, cam, "position", float3(0, 0, kCameraZ));
   anari::setParameter(d, cam, "direction", float3(0, 0, -1));
   anari::setParameter(d, cam, "up", float3(0, 1, 0));
   anari::setParameter(d, cam, "height", kCameraHeight);
@@ -336,26 +346,63 @@ int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int siz
   return failures;
 }
 
-// Rank 0 only: rank 0's sphere front is at z=0.3 and the camera at z=5, so
-// depth there is ~4.7; the background corner must be +inf (or huge).
+// Rank 0 only, with --depth: the composited depth is the nearest hit across
+// all ranks. Each rank's sphere center must show that sphere's depth (no
+// other rank hits there, so their infinite depth must not win), and the
+// background corner, where no rank hits, must be +inf.
 int checkDepth(anari::Device d, anari::Frame frame, int size)
 {
   int failures = 0;
   auto db = anari::map<float>(d, frame, "channel.depth");
-  if (!db.data || db.pixelType != ANARI_FLOAT32) {
-    printf("FAIL: bad depth map\n");
+  if (!db.data || db.width != kImageSize.x || db.height != kImageSize.y
+      || db.pixelType != ANARI_FLOAT32) {
+    printf("FAIL: bad depth map (data=%p %ux%u type=%d)\n",
+        (const void *)db.data,
+        db.width,
+        db.height,
+        int(db.pixelType));
     failures++;
   } else {
-    const int px = pixelX(sphereX(0, size));
-    const float hit = db.data[(kImageSize.y / 2) * kImageSize.x + px];
+    const float want = kCameraZ - kSphereRadius;
+    for (int r = 0; r < size; r++) {
+      const int px = pixelX(sphereX(r, size));
+      const float hit = db.data[(kImageSize.y / 2) * kImageSize.x + px];
+      const bool ok = std::fabs(hit - want) < 0.05f;
+      printf("%s: rank %d sphere depth @ px %d = %f (want %f)\n",
+          ok ? "PASS" : "FAIL",
+          r,
+          px,
+          hit,
+          want);
+      failures += !ok;
+    }
     const float corner = db.data[0];
-    const bool ok =
-        hit > 4.f && hit < 5.f && (std::isinf(corner) || corner > 1e19f);
-    printf("%s: depth hit=%f corner=%g\n", ok ? "PASS" : "FAIL", hit, corner);
+    const bool ok = std::isinf(corner) && corner > 0.f;
+    printf("%s: background depth = %g (want inf)\n", ok ? "PASS" : "FAIL", corner);
     failures += !ok;
   }
   anari::unmap(d, frame, "channel.depth");
   return failures;
+}
+
+// Rank 0 only, without --depth: the app never enabled channel.depth, so
+// mapping it returns nothing and reports why through the status callback.
+int checkDepthRefused(anari::Device d, anari::Frame frame)
+{
+  const int warningsBefore = g_depthWarnings;
+  auto db = anari::map<float>(d, frame, "channel.depth");
+  const bool ok = !db.data && db.width == 0 && db.height == 0
+      && db.pixelType == ANARI_UNKNOWN && g_depthWarnings > warningsBefore;
+  printf("%s: unrequested depth map refused (data=%p %ux%u type=%d, "
+         "warning %s)\n",
+      ok ? "PASS" : "FAIL",
+      (const void *)db.data,
+      db.width,
+      db.height,
+      int(db.pixelType),
+      g_depthWarnings > warningsBefore ? "reported" : "missing");
+  anari::unmap(d, frame, "channel.depth");
+  return !ok;
 }
 
 } // namespace
@@ -403,8 +450,8 @@ int main(int argc, char **argv)
 
   if (rank == 0) {
     failures += checkColor(d, frame, opts, size);
-    if (opts.depth)
-      failures += checkDepth(d, frame, size);
+    failures += opts.depth ? checkDepth(d, frame, size)
+                           : checkDepthRefused(d, frame);
   }
 
   anari::release(d, frame);

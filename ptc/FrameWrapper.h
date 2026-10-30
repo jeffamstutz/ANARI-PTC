@@ -43,12 +43,15 @@ namespace ptc {
 
 
   using FrameWrapperNotificationHandler = std::function<void(const void *)>;
+  using FrameWrapperStatusHandler =
+      std::function<void(ANARIStatusSeverity, const char *)>;
 
   struct FrameWrapper : public helium::RefCounted
   {
     FrameWrapper(ANARIDevice d,
                  ANARIFrame f,
                  FrameWrapperNotificationHandler onObjectDestroy,
+                 FrameWrapperStatusHandler reportStatus,
                  MPI_Comm = MPI_COMM_WORLD);
     virtual ~FrameWrapper() override;
 
@@ -98,6 +101,7 @@ namespace ptc {
     virtual void cleanup() = 0;
 
     FrameWrapperNotificationHandler m_onObjectDestroy;
+    FrameWrapperStatusHandler m_reportStatus;
 
     int m_rank{-1};
 
@@ -108,6 +112,12 @@ namespace ptc {
     ANARIDataType m_currentColorType{ANARI_UNKNOWN};
     anari::math::uint2 m_newSize{0u, 0u};
     anari::math::uint2 m_currentSize{0u, 0u};
+
+    // The wrapped frame always renders depth (compositing needs it); these
+    // track whether the *app* enabled channel.depth, which decides whether
+    // the composited depth may be mapped. Set -> pending, commit -> current.
+    bool m_newDepthEnabled{false};
+    bool m_depthEnabled{false};
 
     float *m_depth = nullptr;
     void  *m_color = nullptr;

@@ -77,8 +77,9 @@ namespace ptc {
   ::CUDAFrameWrapper(ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
+                     FrameWrapperStatusHandler reportStatus,
                      MPI_Comm comm)
-    : FrameWrapper(d,f,onObjectDestroy,comm),
+    : FrameWrapper(d,f,onObjectDestroy,reportStatus,comm),
       m_deepComp(1, comm)
   {
     m_deepComp.affinitizeGPU();
@@ -113,6 +114,7 @@ namespace ptc {
     cudaMalloc((void **)&d_color_in,  size.x * size.y * colorSize);
     cudaMalloc((void **)&d_color_out, size.x * size.y * colorSize);
     cudaMalloc((void **)&d_depth, size.x * size.y * sizeof(*d_depth));
+    cudaMalloc((void **)&d_depth_out, size.x * size.y * sizeof(*d_depth_out));
     CUDA_SYNC_CHECK();
   }
 
@@ -151,10 +153,15 @@ namespace ptc {
        m_currentColorType);
     bool useFloat4 = (m_currentColorType == ANARI_FLOAT32_VEC4);
     m_deepComp.finish(m_rank == 0 ? d_color_out : nullptr,
+                      m_rank == 0 ? d_depth_out : nullptr,
                       useFloat4);
     cudaMemcpy(m_color, 
                d_color_out,
                size.x * size.y * colorSize,
+               cudaMemcpyDefault);
+    cudaMemcpy(m_depth,
+               d_depth_out,
+               size.x * size.y * sizeof(float),
                cudaMemcpyDefault);
 
     CUDA_SYNC_CHECK();
@@ -171,10 +178,13 @@ namespace ptc {
       cudaFree(d_color_in);
     if (d_color_out)
       cudaFree(d_color_out);
+    if (d_depth_out)
+      cudaFree(d_depth_out);
 
     CUDA_SYNC_CHECK();
 
     d_depth = nullptr;
+    d_depth_out = nullptr;
     d_color_in = nullptr;
     d_color_out = nullptr;
   }

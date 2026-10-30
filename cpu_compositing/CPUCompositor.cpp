@@ -22,6 +22,7 @@
 #include <tbb/parallel_for.h>
 #include <tbb/task_arena.h>
 #include <cmath>
+#include <limits>
 
 namespace ptc {
 
@@ -77,13 +78,26 @@ namespace ptc {
     float        alpha;
   };
   
+  /*! depth that stands in for 'nothing hit' inside a LongFrag; any input
+      depth at or beyond it (+inf, or FLT_MAX as helide writes) is a miss */
+  constexpr float noHitDepth = 1e20f;
+
+  /*! color in the low 32 bits, depth's bit pattern in the high 32 bits:
+      for non-negative depths, sorting the 64-bit values sorts by depth */
   struct LongFrag {
     static LongFrag make(uint32_t color, float depth)
-    { if (std::isinf(depth)) depth = 1e20f; return { (size_t((const uint32_t &)depth) << 32) | color }; };
+    {
+      if (!(depth < noHitDepth)) depth = noHitDepth;
+      uint32_t depthBits;
+      memcpy(&depthBits, &depth, sizeof(depthBits));
+      return { (uint64_t(depthBits) << 32) | color };
+    }
 
     inline float depth() const {
-      const uint32_t *p = (const uint32_t *)&bits;
-      return (const float &)p[1];
+      const uint32_t depthBits = uint32_t(bits >> 32);
+      float depth;
+      memcpy(&depth, &depthBits, sizeof(depth));
+      return depth;
     }
     
     inline Fragment color() const
@@ -282,6 +296,8 @@ namespace ptc {
              }
           }
           float    final_depth = fragments[0].depth();
+          if (final_depth >= noHitDepth)
+            final_depth = std::numeric_limits<float>::infinity();
           uint32_t final_color = composited.rgba8();
 
           finalGather.anyRank.sendBuf.color[it] = final_color;

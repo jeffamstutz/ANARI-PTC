@@ -423,6 +423,7 @@ namespace dc {
 
   __global__
   void compositeKernel(void *compositedColor,
+                       float *compositedDepth,
                        bool useFloat4,
                        const uint32_t *compOffsets,
                        Fragment *incomingFragments,
@@ -434,6 +435,7 @@ namespace dc {
 
     float alpha = 0.f;
     float3 color = make_float3(0.f,0.f,0.f);
+    float depth = INFINITY;
     while (1) {
       Fragment *nextClosestFragment = nullptr;
       // find next closest fragment:
@@ -450,6 +452,9 @@ namespace dc {
       }
       if (nextClosestFragment == nullptr || float(nextClosestFragment->z) >= 1e20f)
         break;
+      // fragments come out nearest first, so the first one is the depth
+      if (depth == INFINITY && float(nextClosestFragment->z) < DC_NO_HIT_Z)
+        depth = nextClosestFragment->z;
 
       float4 fragColor = nextClosestFragment->getRGBA();
       color = color
@@ -468,6 +473,7 @@ namespace dc {
       ((float4*)compositedColor)[pixelIdx] = make_float4(color.x,color.y,color.z,1.f);
     else
       ((uint32_t*)compositedColor)[pixelIdx] = make_rgba(color);
+    compositedDepth[pixelIdx] = depth;
   }
     
   inline std::ostream &operator<<(std::ostream &o,
@@ -570,7 +576,9 @@ namespace dc {
     }
   }
 
-  void Compositor::finish(void *whereToWriteFinalPixels, bool useFloat4)
+  void Compositor::finish(void *whereToWriteFinalPixels,
+                          float *whereToWriteFinalDepth,
+                          bool useFloat4)
   {
     CUDA_SYNC_CHECK();
     if (affinitizedGPU < 0)
@@ -973,8 +981,11 @@ namespace dc {
     void *compositedColor = nullptr;
     CUDA_CALL(Malloc(&compositedColor,
                      numPixelsOnThisRank*pixelSize));
+    float *compositedDepth = nullptr;
+    CUDA_CALL(Malloc(&compositedDepth,
+                     numPixelsOnThisRank*sizeof(float)));
     compositeKernel<<<divRoundUp((int)numPixelsOnThisRank,128),128>>>
-      (compositedColor,useFloat4,
+      (compositedColor,compositedDepth,useFloat4,
        fullIntCounters,
        incomingFragments,numPixelsOnThisRank,size);
     CUDA_SYNC_CHECK();
@@ -985,34 +996,48 @@ namespace dc {
     // finally, have composited colors on this rank - gather at master
     // ==================================================================
 
+    const int colorTag = 0;
+    const int depthTag = 1;
     if (rank == 0) {
       prof_finalAssemble.enter();
-      std::vector<MPI_Request> requests(size);
+      std::vector<MPI_Request> requests;
+      const uint32_t numOwn = std::min(numPixelsOnThisRank,numPixelsOrg);
       CUDA_CALL(Memcpy(whereToWriteFinalPixels,
                        compositedColor,
-                       std::min(numPixelsOnThisRank,numPixelsOrg)*pixelSize,
+                       numOwn*pixelSize,
                        cudaMemcpyDefault));
-      // std::copy(compositedColor,
-      //           compositedColor+numPixelsOnThisRank,
-      //           whereToWriteFinalPixels);
+      CUDA_CALL(Memcpy(whereToWriteFinalDepth,
+                       compositedDepth,
+                       numOwn*sizeof(float),
+                       cudaMemcpyDefault));
       for (int node=1;node<size;node++) {
         int begin = pixelBegin(node);//(node+0)*fbSize.x*fbSize.y / size;
         int end   = std::min(numPixelsOrg,pixelEnd(node));//(node+1)*fbSize.x*fbSize.y / size;
         if (begin < end) {
+          requests.emplace_back();
           MPI_CALL(Irecv(((uint8_t*)whereToWriteFinalPixels)+begin*pixelSize,
                          (end-begin)*pixelSize,
-                         MPI_BYTE,node,0,comm,&requests[node]));
+                         MPI_BYTE,node,colorTag,comm,&requests.back()));
+          requests.emplace_back();
+          MPI_CALL(Irecv(whereToWriteFinalDepth+begin,
+                         end-begin,
+                         MPI_FLOAT,node,depthTag,comm,&requests.back()));
         }
       }
-      MPI_CALL(Waitall(size-1,requests.data()+1,MPI_STATUS_IGNORE));
+      MPI_CALL(Waitall((int)requests.size(),requests.data(),MPI_STATUSES_IGNORE));
       prof_finalAssemble.leave();
     } else {
       prof_finalAssemble.enter();
       int begin = pixelBegin(rank);//(node+0)*fbSize.x*fbSize.y / size;
       int end   = std::min(numPixelsOrg,pixelEnd(rank));//(node+1)*fbSize.x*fbSize.y / size;
-      MPI_CALL(Send(compositedColor,
-                    (end-begin)/*numPixelsOnThisRankOrg*/*pixelSize,
-                    MPI_BYTE,0,0,comm));
+      if (begin < end) {
+        MPI_CALL(Send(compositedColor,
+                      (end-begin)/*numPixelsOnThisRankOrg*/*pixelSize,
+                      MPI_BYTE,0,colorTag,comm));
+        MPI_CALL(Send(compositedDepth,
+                      end-begin,
+                      MPI_FLOAT,0,depthTag,comm));
+      }
       prof_finalAssemble.leave();
     }
     prof_all.leave();
@@ -1025,6 +1050,7 @@ namespace dc {
     // CUDA_CALL(Free(compOffsets));
     // CUDA_CALL(Free(incomingFragments));
     CUDA_CALL(Free(compositedColor));
+    CUDA_CALL(Free(compositedDepth));
     if (oldDevice >= 0) {
       CUDA_CALL(SetDevice(oldDevice));
     }

@@ -30,8 +30,9 @@ namespace ptc {
   ::CPUFrameWrapper(ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
+                     FrameWrapperStatusHandler reportStatus,
                      MPI_Comm comm)
-    : FrameWrapper(d,f,onObjectDestroy,comm),
+    : FrameWrapper(d,f,onObjectDestroy,reportStatus,comm),
       compositor(comm)
   {
   }

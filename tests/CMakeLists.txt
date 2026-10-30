@@ -73,19 +73,28 @@ function(ptc_set_test_environment test ranks)
   endif()
 endfunction()
 
+# Each color/rank combination runs twice: without channel.depth (mapping depth
+# must be refused) and with it (--depth: composited depth must be correct).
 foreach(color ${PTC_TEST_COLORS})
   foreach(ranks ${PTC_TEST_RANKS})
-    set(test ptc_smoke_${color}_${ranks}ranks)
-    ptc_smoke_command(cmd ${ranks} --color ${color})
-    add_test(NAME ${test} COMMAND ${cmd})
-    ptc_set_test_environment(${test} ${ranks})
-    # Expected failure: the CPU compositor does not support FLOAT32_VEC4 yet
-    # (ticket 08). Only that specific error counts as a pass, so unrelated
-    # failures still show up.
-    if (NOT USE_CUDA AND color STREQUAL "float32")
-      set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION
-        "support for FLOAT32_VEC4 color channel not implemented")
-    endif()
+    foreach(depth "" "depth")
+      if (depth)
+        set(test ptc_smoke_${color}_depth_${ranks}ranks)
+        ptc_smoke_command(cmd ${ranks} --color ${color} --depth)
+      else()
+        set(test ptc_smoke_${color}_${ranks}ranks)
+        ptc_smoke_command(cmd ${ranks} --color ${color})
+      endif()
+      add_test(NAME ${test} COMMAND ${cmd})
+      ptc_set_test_environment(${test} ${ranks})
+      # Expected failure: the CPU compositor does not support FLOAT32_VEC4 yet
+      # (ticket 08). Only that specific error counts as a pass, so unrelated
+      # failures still show up.
+      if (NOT USE_CUDA AND color STREQUAL "float32")
+        set_tests_properties(${test} PROPERTIES PASS_REGULAR_EXPRESSION
+          "support for FLOAT32_VEC4 color channel not implemented")
+      endif()
+    endforeach()
   endforeach()
 endforeach()
 
