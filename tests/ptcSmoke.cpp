@@ -6,7 +6,9 @@
 // but the last also renders a hidden sphere straight behind the last rank's,
 // so that pixel has hits from all ranks and the nearest one must win.
 // Each rank's surface has id 100 + its world rank, and the visible sphere is
-// primitive 0 of its geometry, the hidden one primitive 1.
+// primitive 0 of its geometry, the hidden one primitive 1. With --ids, every
+// rank also renders a "tie" sphere, the last primitive, at the same place, so
+// that pixel has hits at equal depth from all ranks.
 //
 // Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
 // required ANARI 1.1 device properties. Ranks other than the compositing root
@@ -31,7 +33,8 @@
 //   --ids             enable channel.primitiveId, channel.objectId and
 //                     channel.instanceId (UINT32) and check that each pixel
 //                     holds the nearest fragment's ids; without it, check
-//                     that mapping them is refused. channel.normal and
+//                     that mapping them is refused. At the tie sphere, the
+//                     lowest rank's ids must win. channel.normal and
 //                     channel.albedo, which ptc does not composite, must
 //                     always be refused.
 //   --resize          render a first frame at half the size, then resize
@@ -177,6 +180,9 @@ const int kNumColors = int(sizeof(kColors) / sizeof(kColors[0]));
 // looking down -z, so the depth at a sphere's center pixel is 4.7.
 const float kSphereRadius = 0.3f;
 const float kCameraZ = 5.f;
+// x of the tie sphere (--ids): on the center row, between the ranks' spheres
+const float kTieX = -0.5f;
+
 // surface id (objectId) of the sphere of the rank with this world rank
 uint32_t surfaceId(int worldRank)
 {
@@ -549,18 +555,28 @@ int toUnorm8(float v)
 }
 
 // This rank's spheres, placed by its rank in the layout's communicator
-anari::World buildWorld(anari::Device d, const Layout &l)
+// Primitive index of rank r's tie sphere (--ids): after its visible sphere
+// and, on all but the last rank, the hidden one
+uint32_t tiePrimitive(int r, int size)
+{
+  return r == size - 1 ? 1u : 2u;
+}
+
+anari::World buildWorld(anari::Device d, const Layout &l, bool tie)
 {
   const int rank = l.rank;
   const int size = l.size;
   // [0]: this rank's visible sphere; [1]: hidden behind the last rank's
-  // sphere, at a different depth on each rank
-  float3 pos[2] = {{sphereX(rank, size), 0.f, 0.f},
-      {sphereX(size - 1, size), 0.f, -1.f - 0.5f * rank}};
-  const int numSpheres = rank == size - 1 ? 1 : 2;
+  // sphere, at a different depth on each rank; then the tie sphere
+  std::vector<float3> pos = {{sphereX(rank, size), 0.f, 0.f}};
+  if (rank != size - 1)
+    pos.push_back({sphereX(size - 1, size), 0.f, -1.f - 0.5f * rank});
+  if (tie)
+    pos.push_back({kTieX, 0.f, 0.f});
+  const int numSpheres = int(pos.size());
   float3 col = sphereColor(l, rank);
   auto geom = anari::newObject<anari::Geometry>(d, "sphere");
-  anari::setParameterArray1D(d, geom, "vertex.position", pos, numSpheres);
+  anari::setParameterArray1D(d, geom, "vertex.position", pos.data(), numSpheres);
   anari::setParameter(d, geom, "radius", kSphereRadius);
   anari::commitParameters(d, geom);
   auto mat = anari::newObject<anari::Material>(d, "matte");
@@ -1004,6 +1020,22 @@ int checkIds(anari::Device d, anari::Frame frame, const Layout &l)
         failures += !ok;
       }
     }
+    if (name != "channel.instanceId") {
+      // equal depth on every rank: the lowest rank is in front
+      const int px = pixelX(kTieX);
+      const uint32_t got = fb.data[(kImageSize.y / 2) * kImageSize.x + px];
+      const uint32_t want = name == "channel.primitiveId"
+          ? tiePrimitive(0, l.size)
+          : surfaceId(l.worldRanks[0]);
+      const bool ok = got == want;
+      printf("%s: tie %s @ px %d = %u (want rank 0's %u)\n",
+          ok ? "PASS" : "FAIL",
+          channel,
+          px,
+          got,
+          want);
+      failures += !ok;
+    }
     const uint32_t corner = fb.data[0];
     const bool ok = corner == ~0u;
     printf("%s: background %s = %u (want %u)\n",
@@ -1035,13 +1067,12 @@ int checkChannelsRefused(anari::Device d, anari::Frame frame, bool ids)
 // undefined there, but mapping and reading what is returned must not crash.
 void touchNonRootMaps(anari::Device d, anari::Frame frame)
 {
-  for (const char *channel : {"channel.color",
-           "channel.depth",
-           "channel.primitiveId",
-           "channel.objectId",
-           "channel.instanceId",
-           "channel.normal",
-           "channel.albedo"}) {
+  std::vector<const char *> channels = {"channel.color", "channel.depth"};
+  channels.insert(channels.end(), std::begin(kIdChannels), std::end(kIdChannels));
+  channels.insert(channels.end(),
+      std::begin(kUnsupportedChannels),
+      std::end(kUnsupportedChannels));
+  for (const char *channel : channels) {
     auto fb = anari::map<uint8_t>(d, frame, channel);
     volatile uint8_t sum = 0;
     if (fb.data) {
@@ -1163,7 +1194,7 @@ int main(int argc, char **argv)
   Layout firstLayout = makeLayout(opts.firstComm.value_or(opts.comm));
 
   Scene scene = buildScene(d,
-      buildWorld(d, opts.twoFrames() ? firstLayout : finalLayout),
+      buildWorld(d, opts.twoFrames() ? firstLayout : finalLayout, opts.ids),
       opts.background);
   const FrameState finalState{kImageSize,
       opts.colorType,
@@ -1194,7 +1225,7 @@ int main(int argc, char **argv)
     if (firstLayout.worldRanks != finalLayout.worldRanks) {
       // spheres are placed and colored by rank in the frame's communicator
       anari::release(d, scene.world);
-      scene.world = buildWorld(d, finalLayout);
+      scene.world = buildWorld(d, finalLayout, opts.ids);
       anari::setParameter(d, frame, "world", scene.world);
     }
     changeParameters(d, frame, scene, first, finalState, opts.unsetAll);

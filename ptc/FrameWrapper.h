@@ -49,9 +49,10 @@ namespace ptc {
       nearest fragment (equal depth: the lower rank's), since ids don't
       blend. Each is UINT32 and requested from the wrapped frame only when
       the app enables it. */
-  constexpr const char *ID_CHANNELS[] = {
+  inline constexpr const char *ID_CHANNELS[] = {
       "channel.primitiveId", "channel.objectId", "channel.instanceId"};
-  constexpr size_t NUM_ID_CHANNELS = sizeof(ID_CHANNELS) / sizeof(ID_CHANNELS[0]);
+  inline constexpr size_t NUM_ID_CHANNELS =
+      sizeof(ID_CHANNELS) / sizeof(ID_CHANNELS[0]);
 
   using FrameWrapperNotificationHandler = std::function<void(const void *)>;
   using FrameWrapperStatusHandler =

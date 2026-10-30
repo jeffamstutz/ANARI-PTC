@@ -42,14 +42,16 @@ int idChannelIndex(std::string_view name)
   return -1;
 }
 
-// compositeIds() reduces one record of 32-bit words per pixel:
-// [depth bits, rank, id of each enabled channel...]
-constexpr int ID_RECORD_HEADER = 2;
+// compositeIds() reduces one record of 32-bit words per pixel: the depth
+// (as float bits), the rank, then the id of each enabled channel
+constexpr size_t RECORD_DEPTH = 0;
+constexpr size_t RECORD_RANK = 1;
+constexpr size_t RECORD_FIRST_ID = 2;
 
 float recordDepth(const uint32_t *record)
 {
   float depth;
-  std::memcpy(&depth, record, sizeof(depth));
+  std::memcpy(&depth, &record[RECORD_DEPTH], sizeof(depth));
   // NaN never wins over a hit
   return std::isnan(depth) ? INFINITY : depth;
 }
@@ -67,7 +69,7 @@ void nearestRecord(void *in, void *inout, int *len, MPI_Datatype *type)
   for (int i = 0; i < *len; i++, a += words, b += words) {
     const float da = recordDepth(a);
     const float db = recordDepth(b);
-    if (da < db || (da == db && a[1] < b[1]))
+    if (da < db || (da == db && a[RECORD_RANK] < b[RECORD_RANK]))
       std::memcpy(b, a, bytes);
   }
 }
@@ -485,18 +487,26 @@ void FrameWrapper::compositeIds()
     throw std::runtime_error(
         "cannot composite id channels: the frame has too many pixels");
   }
-  const size_t words = ID_RECORD_HEADER + channels.size();
+  const size_t words = RECORD_FIRST_ID + channels.size();
   std::vector<uint32_t> records(numPixels * words);
 
   uint32_t width = 0, height = 0;
   ANARIDataType type = ANARI_UNKNOWN;
   auto *depth = (const float *)anariMapFrame(
       m_device, m_frame, "channel.depth", &width, &height, &type);
+  if (!depth || type != ANARI_FLOAT32
+      || size_t(width) * height != numPixels) {
+    // still take part in the reduction, with no hits
+    m_reportStatus(ANARI_SEVERITY_WARNING,
+        "the wrapped frame did not render 'channel.depth' as ANARI_FLOAT32; "
+        "compositing the id channels as no hits");
+    depth = nullptr;
+  }
   for (size_t p = 0; p < numPixels; p++) {
     uint32_t *record = records.data() + p * words;
     const float z = depth ? depth[p] : INFINITY;
-    std::memcpy(&record[0], &z, sizeof(z));
-    record[1] = uint32_t(m_rank);
+    std::memcpy(&record[RECORD_DEPTH], &z, sizeof(z));
+    record[RECORD_RANK] = uint32_t(m_rank);
   }
   anariUnmapFrame(m_device, m_frame, "channel.depth");
 
@@ -513,7 +523,7 @@ void FrameWrapper::compositeIds()
       m_reportStatus(ANARI_SEVERITY_WARNING, msg.c_str());
     }
     for (size_t p = 0; p < numPixels; p++)
-      records[p * words + ID_RECORD_HEADER + c] = valid ? ids[p] : ~0u;
+      records[p * words + RECORD_FIRST_ID + c] = valid ? ids[p] : ~0u;
     anariUnmapFrame(m_device, m_frame, name);
   }
 
@@ -538,7 +548,7 @@ void FrameWrapper::compositeIds()
     auto &ids = m_ids[channels[c]];
     ids.resize(numPixels);
     for (size_t p = 0; p < numPixels; p++)
-      ids[p] = records[p * words + ID_RECORD_HEADER + c];
+      ids[p] = records[p * words + RECORD_FIRST_ID + c];
   }
 }
 
