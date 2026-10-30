@@ -24,6 +24,7 @@
 #include <map>
 #include <anari/anari_cpp/ext/linalg.h>
 #include <iostream>
+#include <tbb/global_control.h>
 
 namespace ptc {
   using namespace anari;
@@ -40,6 +41,7 @@ namespace ptc {
   struct CPUCompositor
   {
     CPUCompositor(MPI_Comm comm);
+    ~CPUCompositor();
 
     void resize(int sx, int sy);
     /*! out_color and out_depth should be null on all ranks > 0 */
@@ -90,6 +92,11 @@ namespace ptc {
       int size;
       int rank;
     } mpi;
+    /*! keeps the TBB scheduler alive while this compositor exists; on
+        destruction we wait for TBB's worker threads to exit, so they
+        can't outlive the (dlclose'able) device library that loaded TBB */
+    tbb::task_scheduler_handle tbbHandle{tbb::attach{}};
+
     enum { chunkSize = 64 };
     enum { blockSize = 16 * chunkSize };
   };

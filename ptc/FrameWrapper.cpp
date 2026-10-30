@@ -131,12 +131,12 @@ void FrameWrapper::commitParameters()
 
 void FrameWrapper::release()
 {
-  refDec();
+  refDec(helium::RefType::PUBLIC);
 }
 
 void FrameWrapper::retain()
 {
-  refInc();
+  refInc(helium::RefType::PUBLIC);
 }
 
 int FrameWrapper::getProperty(const char *name,

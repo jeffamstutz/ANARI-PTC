@@ -120,6 +120,13 @@ namespace ptc {
     }
   }
 
+  CPUCompositor::~CPUCompositor()
+  {
+    // returns false (without waiting) if other handles are still active;
+    // the last compositor to go away then does the waiting
+    tbb::finalize(tbbHandle, std::nothrow);
+  }
+
   inline std::ostream &operator<<(std::ostream &o,
                                   const CPUCompositor::Range range)
   { o << "(" << range.begin << "," << range.end << ")"; return o; }
