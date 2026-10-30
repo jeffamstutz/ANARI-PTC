@@ -8,3 +8,4 @@
 - 08 cpu-compositor-float-and-ub — landed after user decisions on followups/08 (blend convention → 09; error policy → 11/12/14) — 0ded9fd 55d87fc
 - 07 honor-mpi-communicator — needs-user (non-blocking) — 9184d6e 75ecea8 — followups/07-collectiveness-and-comm-lifetime.md
 - 09 srgb-correct-blending — needs-user (non-blocking) — 56c8c5d — followups/09-blend-test-and-cuda-precision.md
+- 10 other-frame-channels — needs-user (non-blocking) — 338e66a 62e2241 — followups/10-id-compositing-contracts.md
