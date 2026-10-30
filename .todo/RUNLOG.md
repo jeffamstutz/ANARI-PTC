@@ -3,3 +3,4 @@
 - 03 report-extension-and-properties — needs-user (non-blocking) — 26a3a20 3bac8c8 — followups/03-extension-reporting-choices.md
 - 04 composited-depth-channel — needs-user (non-blocking) — e764cb9 65c42a6 — followups/04-depth-choices-and-missing-diagnosis.md
 - 05 frame-parameter-tracking — needs-user (non-blocking) — 157bf31 afb8f83 — followups/05-commit-semantics-and-no-color.md
+- 06 frame-completion-callback — needs-user (non-blocking) — 231e736 781a1f8 — followups/06-callback-threading-and-scope.md
