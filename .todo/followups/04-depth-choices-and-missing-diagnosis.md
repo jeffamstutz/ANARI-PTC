@@ -115,3 +115,13 @@ The implementer rebuilt the old binary to confirm this:
 - `smoke ufixed8 depth` prints `FAIL: depth hit=0`.
 
 `tests/ptcSmoke.cpp` now rejects unknown arguments and always checks depth one way or the other.
+
+## Resolution (2026-10-30, with the maintainer)
+
+- **Item 1:** answered by the orchestrator note above.
+- **Item 2:** the question of upstreaming the fork vs. treating this repo as the source of truth is added to ticket 15's deepCompositing item.
+- **Item 3:** always compositing and gathering depth is accepted as is. No change.
+- **Item 4:** resolved by 05.
+- **Item 5:** a commit-time warning is added to ticket 14.
+- **Item 6:** noted. The scene strengthens later tests.
+- **Item 7:** the non-root depth copy is on ticket 13. The CPU float32 gap was closed by 08.
