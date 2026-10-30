@@ -24,6 +24,7 @@ endif()
 
 if (USE_CUDA)
   project_add_library(MODULE
+    MpiExtension.cpp
     PTCDevice.cpp
     PTCLibrary.cpp
     FrameWrapper.cpp
@@ -39,6 +40,7 @@ if (USE_CUDA)
   project_compile_definitions(PRIVATE -DPTC_CUDA=1)
 else()
   project_add_library(MODULE
+    MpiExtension.cpp
     PTCDevice.cpp
     PTCLibrary.cpp
     FrameWrapper.cpp

@@ -19,9 +19,11 @@
 // helium
 #include "helium/BaseDevice.h"
 // std
+#include <memory>
 #include <vector>
 
 #include "FrameWrapper.h"
+#include "MpiExtension.h"
 
 namespace ptc {
 
@@ -228,6 +230,8 @@ namespace ptc {
   uint32_t m_refCount{1};
   anari::DeviceImpl *m_ptd{nullptr};
   std::vector<FrameWrapper *> m_frameWrappers;
+  std::unique_ptr<ExtensionList> m_extensions;
+  FrameParameterLists m_frameParameterLists;
 
   static int s_numMpiPTCDevices;
   static bool s_mpiInitializedPrivately;

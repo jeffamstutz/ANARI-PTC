@@ -4,22 +4,24 @@
 // distinct x position with a distinct color through ptc (wrapping helide);
 // rank 0 checks that every sphere shows up in the composited image.
 //
-// Usage: ptcSmoke [--color ufixed8|float32] [--depth]
-//                 [--require-mpi-extension] [--invert-check]
+// Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
+// required ANARI 1.1 device properties.
+//
+// Usage: ptcSmoke [--color ufixed8|float32] [--depth] [--invert-check]
 //                 [--expect-library <path>]
 //
-//   --color                  frame color channel type (default ufixed8)
-//   --depth                  also request and check channel.depth
-//   --require-mpi-extension  fail if the device does not report
-//                            KHR_DATA_PARALLEL_MPI (otherwise only reported
-//                            as XFAIL; ticket 03 makes this the default)
-//   --invert-check           expect the wrong colors, so the pixel check must
-//                            fail; used to test the harness's failure path
-//   --expect-library         fail unless the loaded libanari_library_ptc is
-//                            this file (guards against picking up an
-//                            installed copy instead of the one under test)
+//   --color           frame color channel type (default ufixed8)
+//   --depth           also request and check channel.depth
+//   --invert-check    expect the wrong colors, so the pixel check must fail;
+//                     used to test the harness's failure path
+//   --expect-library  fail unless the loaded libanari_library_ptc is this
+//                     file (guards against picking up an installed copy
+//                     instead of the one under test)
 //
 // Every rank exits non-zero if any rank recorded a failure.
+
+// anariGetDeviceExtensionStruct() is implemented in this translation unit
+#define ANARI_EXTENSION_UTILITY_IMPL
 
 #include <anari/anari_cpp.hpp>
 #include <anari/anari_cpp/ext/linalg.h>
@@ -31,6 +33,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <set>
 #include <string>
 
 using namespace anari::math;
@@ -41,7 +44,6 @@ struct Options
 {
   ANARIDataType colorType{ANARI_UFIXED8_RGBA_SRGB};
   bool depth{false};
-  bool requireMpiExtension{false};
   bool invertCheck{false};
   std::string expectLibrary;
 };
@@ -85,8 +87,6 @@ bool parseArgs(int argc, char **argv, Options &opts)
       }
     } else if (arg == "--depth")
       opts.depth = true;
-    else if (arg == "--require-mpi-extension")
-      opts.requireMpiExtension = true;
     else if (arg == "--invert-check")
       opts.invertCheck = true;
     else if (arg == "--expect-library")
@@ -132,23 +132,107 @@ std::string loadedPtcLibrary()
   return "";
 }
 
-bool deviceHasMpiExtension(anari::Device d)
+// Spelling used by the SDK's extension lists and anari_extension_utility.h
+const char *const kMpiExtension = "ANARI_KHR_DATA_PARALLEL_MPI";
+
+// Count of failed conformance checks, printed with the rank that failed them.
+struct Checker
 {
-  const char *const *exts = nullptr;
-  if (!anariGetProperty(d,
-          d,
-          "extension",
-          ANARI_STRING_LIST,
-          &exts,
-          sizeof(exts),
-          ANARI_WAIT)
-      || !exts)
-    return false;
-  for (auto e = exts; *e; e++) {
-    if (std::string(*e) == "KHR_DATA_PARALLEL_MPI")
-      return true;
+  int rank;
+  int failures{0};
+
+  void expect(bool ok, const std::string &what)
+  {
+    if (!ok) {
+      printf("FAIL: rank %d: %s\n", rank, what.c_str());
+      failures++;
+    }
   }
-  return false;
+};
+
+// Number of times kMpiExtension occurs in a null-terminated list; duplicates
+// of any entry are reported through `c`.
+int countMpiExtension(Checker &c, const char *const *list, const char *source)
+{
+  int count = 0;
+  std::set<std::string> seen;
+  for (auto e = list; e && *e; e++) {
+    c.expect(seen.insert(*e).second,
+        std::string(source) + " lists '" + *e + "' twice");
+    count += std::string(*e) == kMpiExtension;
+  }
+  return count;
+}
+
+template <typename T>
+bool getDeviceProperty(anari::Device d, const char *name, ANARIDataType type, T &out)
+{
+  return anariGetProperty(d, d, name, type, &out, sizeof(out), ANARI_WAIT);
+}
+
+// All ranks: KHR_DATA_PARALLEL_MPI is reported everywhere an application can
+// look for it, and the required device properties have valid values.
+// anariGetProperty is collective under KHR_DATA_PARALLEL_MPI, so every rank
+// makes the same calls.
+int checkDeviceConformance(anari::Library lib, anari::Device d, int rank)
+{
+  Checker c{rank};
+
+  const char *const *exts = nullptr;
+  c.expect(getDeviceProperty(d, "extension", ANARI_STRING_LIST, exts) && exts,
+      "device property 'extension' not reported");
+  c.expect(countMpiExtension(c, exts, "device property 'extension'") == 1,
+      "device property 'extension' lacks " + std::string(kMpiExtension));
+
+  int32_t version = -1, major = -1, minor = -1;
+  c.expect(getDeviceProperty(d, "version", ANARI_INT32, version) && version >= 0,
+      "device property 'version' not reported");
+  c.expect(getDeviceProperty(d, "anariVersion.major", ANARI_INT32, major)
+          && getDeviceProperty(d, "anariVersion.minor", ANARI_INT32, minor)
+          && major == 1 && minor >= 1,
+      "device property 'anariVersion' is not 1.1 or later (got "
+          + std::to_string(major) + "." + std::to_string(minor) + ")");
+  uint64_t maxIndex = 0;
+  c.expect(getDeviceProperty(d, "geometryMaxIndex", ANARI_UINT64, maxIndex)
+          && maxIndex > 0,
+      "device property 'geometryMaxIndex' not reported");
+
+  auto libExts = anariGetDeviceExtensions(lib, "default");
+  c.expect(countMpiExtension(c, libExts, "library extension list") == 1,
+      "library extension list lacks " + std::string(kMpiExtension));
+
+  auto extStruct = anari::extension::getDeviceExtensionStruct(lib, "default");
+  c.expect(extStruct.ANARI_KHR_DATA_PARALLEL_MPI,
+      "anariGetDeviceExtensionStruct does not report the MPI extension");
+
+  auto info = [&](const char *infoName, ANARIDataType infoType) {
+    return anariGetParameterInfo(d,
+        ANARI_FRAME,
+        nullptr,
+        "mpiCommunicator",
+        ANARI_VOID_POINTER,
+        infoName,
+        infoType);
+  };
+  auto *required = (const int32_t *)info("required", ANARI_BOOL);
+  c.expect(required && !*required,
+      "parameter info 'required' missing for frame 'mpiCommunicator'");
+  c.expect(info("description", ANARI_STRING),
+      "parameter info 'description' missing for frame 'mpiCommunicator'");
+  auto *source = (const char *)info("sourceExtension", ANARI_STRING);
+  c.expect(source && std::string(source) == "KHR_DATA_PARALLEL_MPI",
+      "parameter info 'sourceExtension' wrong for frame 'mpiCommunicator'");
+
+  bool listed = false;
+  auto *params = (const ANARIParameter *)anariGetObjectInfo(
+      d, ANARI_FRAME, nullptr, "parameter", ANARI_PARAMETER_LIST);
+  for (auto p = params; p && p->name; p++) {
+    listed |= std::string(p->name) == "mpiCommunicator"
+        && p->type == ANARI_VOID_POINTER;
+  }
+  c.expect(listed, "frame parameter list lacks 'mpiCommunicator'");
+
+  return c.failures;
 }
 
 anari::World buildWorld(anari::Device d, int rank, int size)
@@ -309,20 +393,7 @@ int main(int argc, char **argv)
     }
   }
 
-  // Spec: the device must report KHR_DATA_PARALLEL_MPI. Not implemented yet
-  // (ticket 03), so by default this is an expected failure.
-  if (!deviceHasMpiExtension(d)) {
-    if (opts.requireMpiExtension) {
-      printf("FAIL: rank %d: device does not report KHR_DATA_PARALLEL_MPI\n",
-          rank);
-      failures++;
-    } else if (rank == 0) {
-      printf("XFAIL: device does not report KHR_DATA_PARALLEL_MPI\n");
-    }
-  } else if (rank == 0 && !opts.requireMpiExtension) {
-    printf("XPASS: device reports KHR_DATA_PARALLEL_MPI;"
-           " pass --require-mpi-extension\n");
-  }
+  failures += checkDeviceConformance(lib, d, rank);
 
   auto world = buildWorld(d, rank, size);
   auto frame = buildFrame(d, opts, world);

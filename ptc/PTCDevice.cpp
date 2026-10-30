@@ -20,6 +20,7 @@
 #include <helium/BaseObject.h>
 // std
 #include <algorithm>
+#include <cstring>
 #include <memory>
 #if PTC_CUDA
 #include "CUDAFrameWrapper.h"
@@ -341,7 +342,15 @@ const void *PTCDevice::getObjectInfo(ANARIDataType objectType,
     ANARIDataType infoType)
 {
   initDevice();
-  return m_ptd->getObjectInfo(objectType, objectSubtype, infoName, infoType);
+  auto *info =
+      m_ptd->getObjectInfo(objectType, objectSubtype, infoName, infoType);
+  if (objectType == ANARI_FRAME && infoName
+      && std::strcmp(infoName, "parameter") == 0
+      && infoType == ANARI_PARAMETER_LIST) {
+    return m_frameParameterLists.get(
+        objectSubtype, (const ANARIParameter *)info);
+  }
+  return info;
 }
 
 const void *PTCDevice::getParameterInfo(ANARIDataType objectType,
@@ -351,6 +360,9 @@ const void *PTCDevice::getParameterInfo(ANARIDataType objectType,
     const char *infoName,
     ANARIDataType infoType)
 {
+  if (isMpiCommunicatorParameter(objectType, parameterName, parameterType))
+    return mpiCommunicatorInfo(infoName, infoType);
+
   initDevice();
   return m_ptd->getParameterInfo(objectType,
       objectSubtype,
@@ -425,18 +437,11 @@ void PTCDevice::initDevice()
 
   reportMessage(ANARI_SEVERITY_DEBUG, "initializing PTC device (%p)", this);
 
-  ANARILibrary lib = nullptr;
-  const char *libName = getenv("PTC_ANARI_LIBRARY");
-  if (libName) {
-    lib = anariLoadLibrary(
-        libName, defaultStatusCallback(), defaultStatusCallbackUserPtr());
-  }
-
-  if (!lib) {
+  bool usedFallback = false;
+  ANARILibrary lib = loadWrappedLibrary(
+      defaultStatusCallback(), defaultStatusCallbackUserPtr(), &usedFallback);
+  if (usedFallback)
     reportMessage(ANARI_SEVERITY_WARNING, "falling back to 'helide'");
-    lib = anariLoadLibrary(
-        "helide", defaultStatusCallback(), defaultStatusCallbackUserPtr());
-  }
 
   if (!lib) {
     reportMessage(ANARI_SEVERITY_FATAL_ERROR, "failed to load passthrough lib");
@@ -476,10 +481,37 @@ void PTCDevice::deviceCommitParameters()
   m_ptd->commitParameters(handle);
 }
 
+// Under KHR_DATA_PARALLEL_MPI anariGetProperty is collective, but device
+// properties are the same on every rank, so no communication is needed.
 int PTCDevice::deviceGetProperty(
     const char *name, ANARIDataType type, void *mem, uint64_t size)
 {
-  return 0;
+  initDevice();
+
+  if (name && std::strcmp(name, "extension") == 0
+      && type == ANARI_STRING_LIST) {
+    if (!m_extensions) {
+      const char *const *wrapped = nullptr;
+      if (m_ptd) {
+        m_ptd->getProperty(m_ptd->this_device(),
+            "extension",
+            ANARI_STRING_LIST,
+            &wrapped,
+            sizeof(wrapped),
+            ANARI_WAIT);
+      }
+      m_extensions = std::make_unique<ExtensionList>(wrapped);
+    }
+    helium::writeToVoidP(mem, m_extensions->data());
+    return 1;
+  }
+
+  // Everything else (version, anariVersion.*, geometryMaxIndex, ...) is
+  // whatever the wrapped device reports.
+  if (!m_ptd)
+    return 0;
+  return m_ptd->getProperty(
+      m_ptd->this_device(), name, type, mem, size, ANARI_WAIT);
 }
 
 bool PTCDevice::isFrameHandle(ANARIObject o)
