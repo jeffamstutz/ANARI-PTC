@@ -73,11 +73,16 @@ function(ptc_set_test_environment test ranks)
   endif()
 endfunction()
 
-# Add ptc_smoke_<name>_<ranks>ranks for each rank count.
+# Add ptc_smoke_<name>_<ranks>ranks for each rank count in RANKS (default
+# PTC_TEST_RANKS).
 function(ptc_add_smoke_tests name)
-  foreach(ranks ${PTC_TEST_RANKS})
+  cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "RANKS")
+  if (NOT arg_RANKS)
+    set(arg_RANKS ${PTC_TEST_RANKS})
+  endif()
+  foreach(ranks ${arg_RANKS})
     set(test ptc_smoke_${name}_${ranks}ranks)
-    ptc_smoke_command(cmd ${ranks} ${ARGN})
+    ptc_smoke_command(cmd ${ranks} ${arg_UNPARSED_ARGUMENTS})
     add_test(NAME ${test} COMMAND ${cmd})
     ptc_set_test_environment(${test} ${ranks})
   endforeach()
@@ -122,6 +127,25 @@ ptc_add_smoke_tests(unsupported_color --color float32-vec3)
 ptc_add_smoke_tests(callback --color ufixed8 --callback)
 ptc_add_smoke_tests(callback_resize --color ufixed8 --resize --depth --callback)
 ptc_add_smoke_tests(callback_unset_all --color ufixed8 --unset-all --callback)
+
+# mpiCommunicator (ticket 07): MPI_COMM_WORLD split into two halves, each
+# compositing its own image to its own rank 0. Also switching communicators
+# between frames (back to 'world' unsets the parameter), and to a congruent
+# but different communicator.
+set(PTC_SPLIT_RANKS RANKS 2 4)
+foreach(color ${PTC_TEST_COLORS})
+  ptc_add_smoke_tests(${color}_split --color ${color} --comm split --depth
+    ${PTC_SPLIT_RANKS})
+endforeach()
+ptc_add_smoke_tests(world_to_split --first-comm world --comm split --depth
+  ${PTC_SPLIT_RANKS})
+ptc_add_smoke_tests(split_to_world --first-comm split --comm world --depth
+  ${PTC_SPLIT_RANKS})
+ptc_add_smoke_tests(split_to_split --first-comm split --comm split --resize
+  --depth ${PTC_SPLIT_RANKS})
+ptc_add_smoke_tests(split_unset_all --first-comm split --comm world --unset-all
+  --depth ${PTC_SPLIT_RANKS})
+ptc_add_smoke_tests(split_callback --comm split --callback ${PTC_SPLIT_RANKS})
 
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.

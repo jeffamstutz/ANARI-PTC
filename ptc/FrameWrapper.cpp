@@ -32,15 +32,13 @@ FrameWrapper::FrameWrapper(ANARIDevice ptcDevice,
     ANARIDevice d,
     ANARIFrame f,
     FrameWrapperNotificationHandler onObjectDestroy,
-    FrameWrapperStatusHandler reportStatus,
-    MPI_Comm comm)
+    FrameWrapperStatusHandler reportStatus)
     : m_onObjectDestroy(onObjectDestroy),
       m_reportStatus(reportStatus),
       m_ptcDevice(ptcDevice),
       m_device(d),
       m_frame(f)
 {
-  MPI_Comm_rank(comm, &m_rank);
   anariRetain(m_device, m_device);
   anari::setParameter(m_device, m_frame, "channel.depth", ANARI_FLOAT32);
 }
@@ -51,6 +49,11 @@ FrameWrapper::~FrameWrapper()
   anariRelease(m_device, m_device);
   if (m_color) free(m_color);
   if (m_depth) free(m_depth);
+  // the subclass has destroyed its compositor by now
+  int finalized = 0;
+  MPI_Finalized(&finalized);
+  if (m_comm != MPI_COMM_NULL && !finalized)
+    MPI_Comm_free(&m_comm);
   m_onObjectDestroy(this);
 }
 
@@ -91,6 +94,13 @@ void FrameWrapper::setParameter(
         ? mem
         : TrackedParameters{}.completionCallbackUserData;
     return;
+  } else if (name == "mpiCommunicator") {
+    // Never forwarded: ptc implements KHR_DATA_PARALLEL_MPI. The value is a
+    // pointer to the app's MPI_Comm, dereferenced at the next commit; a null
+    // pointer or a wrong type reads as unset (MPI_COMM_WORLD).
+    m_pendingComm = type == ANARI_VOID_POINTER ? (const MPI_Comm *)mem : nullptr;
+    m_pendingCommChanged = true;
+    return;
   }
 
   anariSetParameter(m_device, m_frame, _name, type, mem);
@@ -113,6 +123,10 @@ void FrameWrapper::unsetParameter(const char *_name)
     m_pending.completionCallbackUserData =
         TrackedParameters{}.completionCallbackUserData;
     return;
+  } else if (name == "mpiCommunicator") {
+    m_pendingComm = nullptr;
+    m_pendingCommChanged = true;
+    return;
   }
   anariUnsetParameter(m_device, m_frame, _name);
 }
@@ -120,6 +134,8 @@ void FrameWrapper::unsetParameter(const char *_name)
 void FrameWrapper::unsetAllParameters()
 {
   m_pending = {};
+  m_pendingComm = nullptr;
+  m_pendingCommChanged = true;
   anariUnsetAllParameters(m_device, m_frame);
   anari::setParameter(m_device, m_frame, "channel.depth", ANARI_FLOAT32);
 }
@@ -174,6 +190,49 @@ void FrameWrapper::commitParameters()
 {
   m_committed = m_pending;
   anariCommitParameters(m_device, m_frame);
+
+  if (!m_pendingCommChanged)
+    return;
+  // The app's MPI_Comm only has to stay valid until this commit returns.
+  const MPI_Comm comm = m_pendingComm ? *m_pendingComm : MPI_COMM_WORLD;
+  m_pendingComm = nullptr;
+  m_pendingCommChanged = false;
+  if (comm == MPI_COMM_NULL) {
+    throw std::runtime_error(
+        "'mpiCommunicator' points to MPI_COMM_NULL; the frame keeps "
+        "compositing over its previous communicator");
+  }
+  setCommunicator(comm);
+}
+
+void FrameWrapper::setCommunicator(MPI_Comm comm)
+{
+  if (m_comm != MPI_COMM_NULL) {
+    int result = MPI_UNEQUAL;
+    MPI_Comm_compare(m_comm, comm, &result);
+    // same ranks in the same order: the compositor works as it is
+    if (result == MPI_IDENT || result == MPI_CONGRUENT)
+      return;
+    // every rank of the old communicator commits a new one in lockstep, so
+    // they all get here and free it together
+    cleanup();
+    destroyCompositor();
+    MPI_Comm_free(&m_comm);
+    m_rank = -1;
+    // the buffers stay mappable until the next render reallocates them
+    m_reallocate = true;
+  }
+
+  MPI_Comm dup = MPI_COMM_NULL;
+  MPI_Comm_dup(comm, &dup);
+  try {
+    createCompositor(dup);
+  } catch (...) {
+    MPI_Comm_free(&dup);
+    throw;
+  }
+  m_comm = dup;
+  MPI_Comm_rank(m_comm, &m_rank);
 }
 
 void FrameWrapper::release()
@@ -256,10 +315,11 @@ void FrameWrapper::updateBuffers()
 {
   const auto size = m_committed.size;
   const auto colorType = m_committed.colorType;
-  if (size == m_bufferSize && colorType == m_bufferColorType)
+  if (size == m_bufferSize && colorType == m_bufferColorType && !m_reallocate)
     return;
 
   freeBuffers();
+  m_reallocate = false;
   if (!isCompositableColorType(colorType)) {
     // the same on every rank (all see the same commits), so no rank is left
     // waiting in the compositor's collectives. Failures on only some ranks
@@ -268,6 +328,10 @@ void FrameWrapper::updateBuffers()
                                          "of type ")
         + anari::toString(colorType)
         + ": supported are UFIXED8_VEC4, UFIXED8_RGBA_SRGB and FLOAT32_VEC4");
+  }
+  if (m_comm == MPI_COMM_NULL && size.x != 0 && size.y != 0) {
+    throw std::runtime_error("cannot composite: the frame has no valid "
+                             "'mpiCommunicator' committed");
   }
   m_bufferSize = size;
   m_bufferColorType = colorType;

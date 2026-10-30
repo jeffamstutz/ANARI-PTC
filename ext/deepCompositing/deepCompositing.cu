@@ -509,6 +509,15 @@ namespace dc {
     MPI_Comm_size(comm,&size);
     ProfPrinter::rank = rank;
   }
+
+  Compositor::~Compositor()
+  {
+    // no CUDA_CALL: destructors must not throw
+    cudaFree(compactedFragmentLists);
+    cudaFree(fixedSizeFragmentLists);
+    cudaFree(lowBitCounters);
+    cudaFree(fullIntCounters);
+  }
     
 
   DeviceInterface Compositor::prepare()

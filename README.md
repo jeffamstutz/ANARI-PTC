@@ -55,6 +55,34 @@ a configure-time warning) if `mpiexec` or `helide` cannot be found.
 Assuming you have a data-parallel application that already has a ANARI
 rendering path, just use this with `ANARI_LIBRARY` set to `ptc`
 
+## Compositing over a communicator other than `MPI_COMM_WORLD`
+
+ptc implements `KHR_DATA_PARALLEL_MPI`. By default a frame composites
+over `MPI_COMM_WORLD`, and world rank 0 receives the image. To composite
+over another communicator, set the frame's `mpiCommunicator` parameter
+(type `ANARI_VOID_POINTER`) to a *pointer to* an `MPI_Comm`:
+
+```cpp
+MPI_Comm comm = ...; // e.g. from MPI_Comm_split
+anariSetParameter(device, frame, "mpiCommunicator", ANARI_VOID_POINTER, &comm);
+anariCommitParameters(device, frame);
+```
+
+Passing a pointer works the same whether `MPI_Comm` is an `int` (MPICH)
+or a pointer (Open MPI). ptc reads it during the frame's commit, so the
+`MPI_Comm` variable only has to stay valid until `anariCommitParameters`
+returns. ptc keeps its own duplicate of the communicator, so the app may
+free its communicator after the commit.
+
+- Rank 0 *of that communicator* receives the composited image. On the
+  other ranks the frame can still be mapped, but its contents are
+  undefined.
+- Committing a frame with a new communicator is collective: every rank of
+  the new communicator, and of the one it replaces, must commit the frame
+  together. A communicator with the same ranks in the same order as the
+  current one is kept as it is.
+- Unsetting `mpiCommunicator` goes back to `MPI_COMM_WORLD`.
+
 # Contributors
 
 Though the project lives under my github namespace (and all files bear

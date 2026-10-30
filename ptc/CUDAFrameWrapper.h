@@ -19,6 +19,8 @@
 #include "FrameWrapper.h"
 // mpi
 #include "deepCompositing.h"
+// std
+#include <memory>
 
 namespace ptc {
 
@@ -28,16 +30,17 @@ namespace ptc {
                      ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
-                     FrameWrapperStatusHandler reportStatus,
-                     MPI_Comm = MPI_COMM_WORLD);
+                     FrameWrapperStatusHandler reportStatus);
     virtual ~CUDAFrameWrapper();
     
     // void renderFrame() override;
     void allocate() override;
     void composite() override;
     void cleanup() override;
-    
-    dc::Compositor m_deepComp;
+    void createCompositor(MPI_Comm comm) override;
+    void destroyCompositor() override;
+
+    std::unique_ptr<dc::Compositor> m_deepComp;
     /*! composited depth (rank 0), before it is copied to m_depth */
     float *d_depth_out{nullptr};
   };

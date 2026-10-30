@@ -55,8 +55,7 @@ namespace ptc {
                  ANARIDevice d,
                  ANARIFrame f,
                  FrameWrapperNotificationHandler onObjectDestroy,
-                 FrameWrapperStatusHandler reportStatus,
-                 MPI_Comm = MPI_COMM_WORLD);
+                 FrameWrapperStatusHandler reportStatus);
     virtual ~FrameWrapper() override;
 
     ANARIFrame handle() const;
@@ -129,11 +128,36 @@ namespace ptc {
     virtual void composite() = 0;
     /*! frees what allocate() allocated */
     virtual void cleanup() = 0;
+    /*! creates the compositor, over 'comm' (owned by this FrameWrapper);
+        collective over 'comm' */
+    virtual void createCompositor(MPI_Comm comm) = 0;
+    /*! destroys the compositor createCompositor() created, after cleanup() */
+    virtual void destroyCompositor() = 0;
+
+    /*! makes the compositor composite over 'comm' (a copy of it), if it
+        doesn't already composite over the same ranks; collective over
+        'comm' and over the communicator it replaces */
+    void setCommunicator(MPI_Comm comm);
 
     FrameWrapperNotificationHandler m_onObjectDestroy;
     FrameWrapperStatusHandler m_reportStatus;
 
+    // 'mpiCommunicator' (KHR_DATA_PARALLEL_MPI). The app passes a pointer to
+    // an MPI_Comm as the ANARI_VOID_POINTER value, which works whether
+    // MPI_Comm is an int (MPICH) or a pointer (Open MPI). It is read at the
+    // next commit, so it only has to stay valid until that commit returns.
+    // nullptr: unset, i.e. MPI_COMM_WORLD.
+    const MPI_Comm *m_pendingComm{nullptr};
+    // whether mpiCommunicator was set or unset since the last commit (true
+    // at first, so the first commit creates the compositor)
+    bool m_pendingCommChanged{true};
+    // The compositor's communicator: our MPI_Comm_dup of the committed one
+    // (so the app may free its own), MPI_COMM_NULL before the first commit.
+    MPI_Comm m_comm{MPI_COMM_NULL};
+    // this rank in m_comm; rank 0 receives the composited image
     int m_rank{-1};
+    // the compositor changed, so buffers must be reallocated at the next render
+    bool m_reallocate{false};
 
     ANARIDevice m_ptcDevice{nullptr};
     ANARIDevice m_device{nullptr};

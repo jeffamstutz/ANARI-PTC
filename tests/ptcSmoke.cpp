@@ -7,12 +7,14 @@
 // so that pixel has hits from all ranks and the nearest one must win.
 //
 // Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
-// required ANARI 1.1 device properties.
+// required ANARI 1.1 device properties. Ranks other than the compositing root
+// map the frame too: the contents are undefined there, but it must not crash.
 //
 // Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|float32-vec3|none]
 //                 [--depth]
 //                 [--resize] [--first-color <type>] [--unset-all]
 //                 [--uncommitted] [--callback] [--invert-check]
+//                 [--comm world|split] [--first-comm world|split]
 //                 [--expect-library <path>]
 //
 //   --color           frame color channel type (default ufixed8); 'none'
@@ -39,13 +41,22 @@
 //                     and one more render must not call it.
 //   --invert-check    expect the wrong colors, so the pixel check must fail;
 //                     used to test the harness's failure path
+//   --comm            communicator the frame composites over (default
+//                     world): 'world' leaves mpiCommunicator unset (so
+//                     MPI_COMM_WORLD); 'split' splits MPI_COMM_WORLD into two
+//                     halves (needs an even number of ranks) and sets
+//                     mpiCommunicator. Each half renders its own image, with
+//                     colors picked by world rank, and its rank 0 checks it.
+//   --first-comm      render a first frame over this communicator, then
+//                     change it to --comm (going back to 'world' unsets
+//                     mpiCommunicator)
 //   --expect-library  fail unless the loaded libanari_library_ptc is this
 //                     file (guards against picking up an installed copy
 //                     instead of the one under test)
 //
-// With --resize, --first-color or --unset-all, a first frame is rendered and
-// its color map is checked, then the frame's parameters change and the full
-// checks run on the second frame. The first frame also has the opposite
+// With --resize, --first-color, --first-comm or --unset-all, a first frame is
+// rendered and its color map is checked, then the frame's parameters change and
+// the full checks run on the second frame. The first frame also has the opposite
 // channel.depth setting, so depth is enabled or disabled between frames too.
 // Without --unset-all, parameters that go away are unset one by one.
 //
@@ -72,6 +83,19 @@ using namespace anari::math;
 
 namespace {
 
+// The communicator a frame composites over, and this rank's place in it.
+struct Layout
+{
+  // whether mpiCommunicator is set (to `comm`); otherwise MPI_COMM_WORLD
+  bool split{false};
+  MPI_Comm comm{MPI_COMM_WORLD};
+  int rank{0};
+  int size{1};
+  // world rank of this communicator's rank 0, which picks the colors: each
+  // half of a split renders different ones
+  int colorBase{0};
+};
+
 // The frame parameters ptc tracks. color == ANARI_UNKNOWN means unset.
 struct FrameState
 {
@@ -79,6 +103,7 @@ struct FrameState
   ANARIDataType color{ANARI_UNKNOWN};
   bool depth{false};
   bool callback{false};
+  const Layout *layout{nullptr};
 };
 
 struct Options
@@ -91,11 +116,13 @@ struct Options
   bool uncommitted{false};
   bool callback{false};
   bool invertCheck{false};
+  bool splitComm{false};
+  std::optional<bool> firstSplitComm;
   std::string expectLibrary;
 
   bool twoFrames() const
   {
-    return resize || firstColorType || unsetAll;
+    return resize || firstColorType || firstSplitComm || unsetAll;
   }
 };
 
@@ -158,13 +185,26 @@ bool compositable(ANARIDataType type)
       || type == ANARI_UFIXED8_RGBA_SRGB || type == ANARI_FLOAT32_VEC4;
 }
 
+bool parseComm(const std::string &comm, bool &split)
+{
+  if (comm == "world")
+    split = false;
+  else if (comm == "split")
+    split = true;
+  else {
+    fprintf(stderr, "unknown communicator '%s'\n", comm.c_str());
+    return false;
+  }
+  return true;
+}
+
 bool parseArgs(int argc, char **argv, Options &opts)
 {
   for (int i = 1; i < argc; i++) {
     const std::string arg = argv[i];
     const bool hasValue = i + 1 < argc;
-    if ((arg == "--color" || arg == "--first-color"
-            || arg == "--expect-library")
+    if ((arg == "--color" || arg == "--first-color" || arg == "--comm"
+            || arg == "--first-comm" || arg == "--expect-library")
         && !hasValue) {
       fprintf(stderr, "missing value for '%s'\n", arg.c_str());
       return false;
@@ -189,6 +229,15 @@ bool parseArgs(int argc, char **argv, Options &opts)
       opts.callback = true;
     else if (arg == "--invert-check")
       opts.invertCheck = true;
+    else if (arg == "--comm") {
+      if (!parseComm(argv[++i], opts.splitComm))
+        return false;
+    } else if (arg == "--first-comm") {
+      bool split;
+      if (!parseComm(argv[++i], split))
+        return false;
+      opts.firstSplitComm = split;
+    }
     else if (arg == "--expect-library")
       opts.expectLibrary = argv[++i];
     else {
@@ -197,6 +246,32 @@ bool parseArgs(int argc, char **argv, Options &opts)
     }
   }
   return true;
+}
+
+// MPI_COMM_WORLD, or (split) a new communicator for this rank's half of it.
+// Every call splits anew, so two split layouts have different communicators
+// with the same ranks.
+Layout makeLayout(bool split)
+{
+  Layout l;
+  int worldRank = 0, worldSize = 1;
+  MPI_Comm_rank(MPI_COMM_WORLD, &worldRank);
+  MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
+  if (split) {
+    const int half = worldSize / 2;
+    l.split = true;
+    MPI_Comm_split(MPI_COMM_WORLD, worldRank / half, worldRank, &l.comm);
+    l.colorBase = worldRank / half * half;
+  }
+  MPI_Comm_rank(l.comm, &l.rank);
+  MPI_Comm_size(l.comm, &l.size);
+  return l;
+}
+
+void freeLayout(Layout &l)
+{
+  if (l.split)
+    MPI_Comm_free(&l.comm);
 }
 
 // x position of rank r's sphere, in world space
@@ -335,14 +410,23 @@ int checkDeviceConformance(anari::Library lib, anari::Device d, int rank)
   return c.failures;
 }
 
-anari::World buildWorld(anari::Device d, int rank, int size)
+// Color of rank r of the layout's communicator
+float3 sphereColor(const Layout &l, int r)
 {
+  return kColors[(l.colorBase + r) % kNumColors];
+}
+
+// This rank's spheres, placed by its rank in the layout's communicator
+anari::World buildWorld(anari::Device d, const Layout &l)
+{
+  const int rank = l.rank;
+  const int size = l.size;
   // [0]: this rank's visible sphere; [1]: hidden behind the last rank's
   // sphere, at a different depth on each rank
   float3 pos[2] = {{sphereX(rank, size), 0.f, 0.f},
       {sphereX(size - 1, size), 0.f, -1.f - 0.5f * rank}};
   const int numSpheres = rank == size - 1 ? 1 : 2;
-  float3 col = kColors[rank % kNumColors];
+  float3 col = sphereColor(l, rank);
   auto geom = anari::newObject<anari::Geometry>(d, "sphere");
   anari::setParameterArray1D(d, geom, "vertex.position", pos, numSpheres);
   anari::setParameter(d, geom, "radius", kSphereRadius);
@@ -410,7 +494,7 @@ struct CallbackContext
   anari::Device device{nullptr};
   anari::Frame frame{nullptr};
   int rank{0};
-  int size{1};
+  const Layout *layout{nullptr};
   const Options *opts{nullptr};
   // the committed frame state of the render in flight, for rank 0's check
   const FrameState *rendering{nullptr};
@@ -420,6 +504,22 @@ struct CallbackContext
 };
 
 CallbackContext g_callback;
+
+// What mpiCommunicator points to. ptc may only read it until the frame's
+// commit returns, so commitFrame() clobbers it afterwards.
+MPI_Comm g_commParameter = MPI_COMM_NULL;
+
+void setCommunicator(anari::Device d, anari::Frame frame, const Layout &l)
+{
+  g_commParameter = l.comm;
+  anari::setParameter(d, frame, "mpiCommunicator", (void *)&g_commParameter);
+}
+
+void commitFrame(anari::Device d, anari::Frame frame)
+{
+  anari::commitParameters(d, frame);
+  g_commParameter = MPI_COMM_NULL;
+}
 
 // Set every parameter of `state` (and the scene objects) on the frame.
 void setAllParameters(
@@ -443,6 +543,8 @@ void setAllParameters(
         "frameCompletionCallbackUserData",
         (void *)&g_callback);
   }
+  if (state.layout->split)
+    setCommunicator(d, frame, *state.layout);
 }
 
 // Move the frame from `prev` to `next`: set what changed and unset what went
@@ -468,8 +570,12 @@ void changeParameters(anari::Device d,
       anari::unsetParameter(d, frame, "channel.depth");
     else if (!prev.depth)
       anari::setParameter(d, frame, "channel.depth", ANARI_FLOAT32);
+    if (next.layout->split)
+      setCommunicator(d, frame, *next.layout);
+    else if (prev.layout->split)
+      anari::unsetParameter(d, frame, "mpiCommunicator");
   }
-  anari::commitParameters(d, frame);
+  commitFrame(d, frame);
 }
 
 // Rank 0 only: the frame has no channel.color, so mapping color returns
@@ -516,9 +622,12 @@ int checkFirstFrame(anari::Device d, anari::Frame frame, const FrameState &state
   return !ok;
 }
 
-// Rank 0 only: probe the pixel at the center of each rank's sphere.
-int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int size)
+// Rank 0 of the layout only: probe the pixel at the center of each rank's
+// sphere.
+int checkColor(
+    anari::Device d, anari::Frame frame, const Options &opts, const Layout &l)
 {
+  const int size = l.size;
   if (opts.colorType == ANARI_UNKNOWN || !compositable(opts.colorType))
     return checkColorRefused(d, frame, "final frame");
   int failures = 0;
@@ -544,7 +653,7 @@ int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int siz
         for (int i = 0; i < 4; i++)
           c[i] = ((v >> (8 * i)) & 0xff) / 255.f;
       }
-      float3 want = kColors[r % kNumColors];
+      float3 want = sphereColor(l, r);
       if (opts.invertCheck)
         want = float3(1.f) - want;
       bool ok = c[3] > 0.9f;
@@ -565,7 +674,7 @@ int checkColor(anari::Device d, anari::Frame frame, const Options &opts, int siz
   return failures;
 }
 
-// Rank 0 only, with --depth: the composited depth is the nearest hit across
+// Rank 0 of the layout only, with --depth: the composited depth is the nearest hit across
 // all ranks. Each rank's sphere center must show that sphere's depth: other
 // ranks either miss there (their +inf must not win) or, behind the last
 // rank's sphere, hit farther away. The background corner, where no rank hits,
@@ -625,6 +734,23 @@ int checkDepthRefused(anari::Device d, anari::Frame frame)
   return !ok;
 }
 
+// Ranks other than the layout's rank 0: the spec leaves the mapped contents
+// undefined there, but mapping and reading what is returned must not crash.
+void touchNonRootMaps(anari::Device d, anari::Frame frame)
+{
+  for (const char *channel : {"channel.color", "channel.depth"}) {
+    auto fb = anari::map<uint8_t>(d, frame, channel);
+    volatile uint8_t sum = 0;
+    if (fb.data) {
+      const size_t bytes =
+          size_t(fb.width) * fb.height * anari::sizeOf(fb.pixelType);
+      for (size_t i = 0; i < bytes; i++)
+        sum += fb.data[i];
+    }
+    anari::unmap(d, frame, channel);
+  }
+}
+
 // Called by ptc once the composited frame is ready. The handles must be the
 // ones the app holds (not the wrapped device's), and on rank 0 the composited
 // color must already be there: mapping it is legal inside the callback.
@@ -646,10 +772,11 @@ void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
   c.expect(f == ctx.frame,
       "frame completion callback got a frame handle that is not the ptc "
       "frame");
-  if (d == ctx.device && f == ctx.frame && ctx.rank == 0 && ctx.rendering) {
+  if (d == ctx.device && f == ctx.frame && ctx.rendering
+      && ctx.rendering->layout->rank == 0) {
     printf("callback %d: checking composited color\n", ctx.calls);
     c.failures += ctx.finalFrame
-        ? checkColor(ctx.device, ctx.frame, *ctx.opts, ctx.size)
+        ? checkColor(ctx.device, ctx.frame, *ctx.opts, *ctx.layout)
         : checkFirstFrame(ctx.device, ctx.frame, *ctx.rendering);
   }
   ctx.failures += c.failures;
@@ -666,7 +793,7 @@ int checkCallbackCalls(anari::Device d, anari::Frame frame, int rank, int render
 
   g_callback.rendering = nullptr;
   anari::unsetParameter(d, frame, "frameCompletionCallback");
-  anari::commitParameters(d, frame);
+  commitFrame(d, frame);
   const int before = g_callback.calls;
   anari::render(d, frame);
   anari::wait(d, frame);
@@ -721,31 +848,49 @@ int main(int argc, char **argv)
 
   failures += checkDeviceConformance(lib, d, rank);
 
-  const Scene scene = buildScene(d, buildWorld(d, rank, size));
+  if ((opts.splitComm || opts.firstSplitComm.value_or(false))
+      && (size < 2 || size % 2)) {
+    printf("FAIL: rank %d: --comm split needs an even number of ranks\n", rank);
+    failures++;
+    opts.splitComm = false;
+    opts.firstSplitComm.reset();
+  }
+  Layout finalLayout = makeLayout(opts.splitComm);
+  Layout firstLayout = makeLayout(opts.firstSplitComm.value_or(opts.splitComm));
+
+  Scene scene = buildScene(d,
+      buildWorld(d, opts.twoFrames() ? firstLayout : finalLayout));
   const FrameState finalState{
-      kImageSize, opts.colorType, opts.depth, opts.callback};
+      kImageSize, opts.colorType, opts.depth, opts.callback, &finalLayout};
   auto frame = anari::newObject<anari::Frame>(d);
-  g_callback = {d, frame, rank, size, &opts};
+  g_callback = {d, frame, rank, &finalLayout, &opts};
   int renders = 0;
 
   if (opts.twoFrames()) {
     const FrameState first{opts.resize ? kImageSize / 2u : kImageSize,
         opts.firstColorType.value_or(opts.colorType),
         !opts.depth,
-        opts.callback};
+        opts.callback,
+        &firstLayout};
     setAllParameters(d, frame, scene, first);
-    anari::commitParameters(d, frame);
+    commitFrame(d, frame);
     g_callback.rendering = &first;
     anari::render(d, frame);
     anari::wait(d, frame);
     renders++;
     g_callback.rendering = nullptr; // `first` goes out of scope
-    if (rank == 0)
+    if (firstLayout.rank == 0)
       failures += checkFirstFrame(d, frame, first);
+    if (firstLayout.split != finalLayout.split) {
+      // spheres are placed and colored by rank in the frame's communicator
+      anari::release(d, scene.world);
+      scene.world = buildWorld(d, finalLayout);
+      anari::setParameter(d, frame, "world", scene.world);
+    }
     changeParameters(d, frame, scene, first, finalState, opts.unsetAll);
   } else {
     setAllParameters(d, frame, scene, finalState);
-    anari::commitParameters(d, frame);
+    commitFrame(d, frame);
   }
 
   if (opts.uncommitted) {
@@ -779,11 +924,12 @@ int main(int argc, char **argv)
     failures += c.failures;
   }
 
-  if (rank == 0) {
-    failures += checkColor(d, frame, opts, size);
-    failures += opts.depth ? checkDepth(d, frame, size)
+  if (finalLayout.rank == 0) {
+    failures += checkColor(d, frame, opts, finalLayout);
+    failures += opts.depth ? checkDepth(d, frame, finalLayout.size)
                            : checkDepthRefused(d, frame);
-  }
+  } else
+    touchNonRootMaps(d, frame);
 
   if (opts.callback)
     failures += checkCallbackCalls(d, frame, rank, renders);
@@ -792,6 +938,8 @@ int main(int argc, char **argv)
   releaseScene(d, scene);
   anari::release(d, d);
   anari::unloadLibrary(lib);
+  freeLayout(firstLayout);
+  freeLayout(finalLayout);
 
   int totalFailures = 0;
   MPI_Allreduce(&failures, &totalFailures, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);

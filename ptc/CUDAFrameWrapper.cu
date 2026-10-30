@@ -78,12 +78,9 @@ namespace ptc {
                      ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
-                     FrameWrapperStatusHandler reportStatus,
-                     MPI_Comm comm)
-    : FrameWrapper(ptcDevice,d,f,onObjectDestroy,reportStatus,comm),
-      m_deepComp(1, comm)
+                     FrameWrapperStatusHandler reportStatus)
+    : FrameWrapper(ptcDevice,d,f,onObjectDestroy,reportStatus)
   {
-    m_deepComp.affinitizeGPU();
   }
 
   CUDAFrameWrapper
@@ -97,7 +94,7 @@ namespace ptc {
     const auto &size = m_bufferSize;
     const size_t numPixels = size_t(size.x) * size.y;
 
-    m_deepComp.resize(size.x, size.y);
+    m_deepComp->resize(size.x, size.y);
 
     const size_t colorSize = colorPixelSize(m_bufferColorType);
     cudaMalloc((void **)&d_color_in,  numPixels * colorSize);
@@ -139,14 +136,14 @@ namespace ptc {
     auto ngy = dc::divRoundUp(size.y, 16);
 
     writeFrags<<<dim3(ngx, ngy), dim3(16, 16)>>>
-      (m_deepComp.prepare(),
+      (m_deepComp->prepare(),
        size.x,
        size.y,
        d_depth,
        d_color_in,
        m_bufferColorType);
     bool useFloat4 = (m_bufferColorType == ANARI_FLOAT32_VEC4);
-    m_deepComp.finish(m_rank == 0 ? d_color_out : nullptr,
+    m_deepComp->finish(m_rank == 0 ? d_color_out : nullptr,
                       m_rank == 0 ? d_depth_out : nullptr,
                       useFloat4);
     cudaMemcpy(m_color, 
@@ -163,6 +160,18 @@ namespace ptc {
     anariUnmapFrame(m_device, m_frame, "channel.depth");
     if (hasColor)
       anariUnmapFrame(m_device, m_frame, "channel.color");
+  }
+
+  void CUDAFrameWrapper::createCompositor(MPI_Comm comm)
+  {
+    m_deepComp = std::make_unique<dc::Compositor>(1, comm);
+    // picks a GPU by this rank's place among the ranks of 'comm' on its node
+    m_deepComp->affinitizeGPU();
+  }
+
+  void CUDAFrameWrapper::destroyCompositor()
+  {
+    m_deepComp.reset();
   }
 
   void CUDAFrameWrapper::cleanup()

@@ -31,10 +31,8 @@ namespace ptc {
                      ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
-                     FrameWrapperStatusHandler reportStatus,
-                     MPI_Comm comm)
-    : FrameWrapper(ptcDevice,d,f,onObjectDestroy,reportStatus,comm),
-      compositor(comm)
+                     FrameWrapperStatusHandler reportStatus)
+    : FrameWrapper(ptcDevice,d,f,onObjectDestroy,reportStatus)
   {
   }
 
@@ -46,7 +44,7 @@ namespace ptc {
   
   void CPUFrameWrapper::allocate()
   {
-    compositor.resize(m_bufferSize.x, m_bufferSize.y,
+    compositor->resize(m_bufferSize.x, m_bufferSize.y,
                       m_bufferColorType == ANARI_FLOAT32_VEC4
                       ? CPUCompositor::ColorFormat::RGBA32F
                       : CPUCompositor::ColorFormat::RGBA8);
@@ -68,7 +66,7 @@ namespace ptc {
                       &size.x, &size.y, &ptType)
       : m_noColor.data();
 
-    compositor.run(m_color, m_depth, color, depth);
+    compositor->run(m_color, m_depth, color, depth);
 
     anariUnmapFrame(m_device, m_frame, "channel.depth");
     if (hasColor)
@@ -78,6 +76,16 @@ namespace ptc {
   void CPUFrameWrapper::cleanup()
   {
     m_noColor = {};
+  }
+
+  void CPUFrameWrapper::createCompositor(MPI_Comm comm)
+  {
+    compositor = std::make_unique<CPUCompositor>(comm);
+  }
+
+  void CPUFrameWrapper::destroyCompositor()
+  {
+    compositor.reset();
   }
 
 } // namespace ptc

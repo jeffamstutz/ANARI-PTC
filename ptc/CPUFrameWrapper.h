@@ -19,6 +19,8 @@
 #include "FrameWrapper.h"
 // mpi
 #include "CPUCompositor.h"
+// std
+#include <memory>
 
 namespace ptc {
 
@@ -28,16 +30,17 @@ namespace ptc {
                     ANARIDevice d,
                     ANARIFrame f,
                     FrameWrapperNotificationHandler onObjectDestroy,
-                    FrameWrapperStatusHandler reportStatus,
-                    MPI_Comm = MPI_COMM_WORLD);
+                    FrameWrapperStatusHandler reportStatus);
     virtual ~CPUFrameWrapper();
     
     // void renderFrame() override;
     void allocate() override;
     void composite() override;
     void cleanup() override;
-    
-    CPUCompositor compositor;
+    void createCompositor(MPI_Comm comm) override;
+    void destroyCompositor() override;
+
+    std::unique_ptr<CPUCompositor> compositor;
     /*! compositor color input when the frame has no channel.color */
     std::vector<uint32_t> m_noColor;
   };

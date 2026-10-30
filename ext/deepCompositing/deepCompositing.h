@@ -175,6 +175,10 @@ namespace dc {
   {
     Compositor(int maxFragsPerPixel=DEFAULT_MAX_FRAGS_PER_PIXEL,
                MPI_Comm comm = MPI_COMM_WORLD);
+    /*! frees the device frame buffer; does not communicate */
+    ~Compositor();
+    Compositor(const Compositor &) = delete;
+    Compositor &operator=(const Compositor &) = delete;
 
     /*! prepare rendering the next frame - MUST be called exactly once
         before rendering the frame */
