@@ -11,7 +11,8 @@
 //
 // Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|none] [--depth]
 //                 [--resize] [--first-color <type>] [--unset-all]
-//                 [--uncommitted] [--invert-check] [--expect-library <path>]
+//                 [--uncommitted] [--callback] [--invert-check]
+//                 [--expect-library <path>]
 //
 //   --color           frame color channel type (default ufixed8); 'none'
 //                     leaves channel.color unset and checks that mapping
@@ -26,6 +27,12 @@
 //   --uncommitted     before the final render, set a different size and
 //                     color type without committing them; they must not
 //                     take effect
+//   --callback        set frameCompletionCallback on the frame; every render
+//                     must call it once, on every rank, with the ptc device
+//                     and frame handles and the app's user data, after
+//                     compositing (rank 0 checks the composited color from
+//                     inside the callback). Afterwards the callback is unset
+//                     and one more render must not call it.
 //   --invert-check    expect the wrong colors, so the pixel check must fail;
 //                     used to test the harness's failure path
 //   --expect-library  fail unless the loaded libanari_library_ptc is this
@@ -67,6 +74,7 @@ struct FrameState
   uint2 size;
   ANARIDataType color{ANARI_UNKNOWN};
   bool depth{false};
+  bool callback{false};
 };
 
 struct Options
@@ -77,6 +85,7 @@ struct Options
   std::optional<ANARIDataType> firstColorType;
   bool unsetAll{false};
   bool uncommitted{false};
+  bool callback{false};
   bool invertCheck{false};
   std::string expectLibrary;
 
@@ -159,6 +168,8 @@ bool parseArgs(int argc, char **argv, Options &opts)
       opts.unsetAll = true;
     else if (arg == "--uncommitted")
       opts.uncommitted = true;
+    else if (arg == "--callback")
+      opts.callback = true;
     else if (arg == "--invert-check")
       opts.invertCheck = true;
     else if (arg == "--expect-library")
@@ -372,6 +383,27 @@ void releaseScene(anari::Device d, const Scene &s)
   anari::release(d, s.renderer);
 }
 
+// Frame completion callback (--callback) /////////////////////////////////////
+
+void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f);
+
+// What the callback expects, passed to it as its user data.
+struct CallbackContext
+{
+  anari::Device device{nullptr};
+  anari::Frame frame{nullptr};
+  int rank{0};
+  int size{1};
+  const Options *opts{nullptr};
+  // the committed frame state of the render in flight, for rank 0's check
+  const FrameState *rendering{nullptr};
+  bool finalFrame{false};
+  int calls{0};
+  int failures{0};
+};
+
+CallbackContext g_callback;
+
 // Set every parameter of `state` (and the scene objects) on the frame.
 void setAllParameters(
     anari::Device d, anari::Frame frame, const Scene &scene, const FrameState &state)
@@ -384,6 +416,16 @@ void setAllParameters(
     anari::setParameter(d, frame, "channel.color", state.color);
   if (state.depth)
     anari::setParameter(d, frame, "channel.depth", ANARI_FLOAT32);
+  if (state.callback) {
+    anari::setParameter(d,
+        frame,
+        "frameCompletionCallback",
+        (ANARIFrameCompletionCallback)onFrameComplete);
+    anari::setParameter(d,
+        frame,
+        "frameCompletionCallbackUserData",
+        (void *)&g_callback);
+  }
 }
 
 // Move the frame from `prev` to `next`: set what changed and unset what went
@@ -566,6 +608,60 @@ int checkDepthRefused(anari::Device d, anari::Frame frame)
   return !ok;
 }
 
+// Called by ptc once the composited frame is ready. The handles must be the
+// ones the app holds (not the wrapped device's), and on rank 0 the composited
+// color must already be there: mapping it is legal inside the callback.
+void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
+{
+  auto &ctx = g_callback;
+  ctx.calls++;
+  Checker c{ctx.rank};
+  c.expect(userData == &ctx,
+      "frame completion callback got the wrong user data");
+  c.expect(d == ctx.device,
+      "frame completion callback got a device handle that is not the ptc "
+      "device");
+  c.expect(f == ctx.frame,
+      "frame completion callback got a frame handle that is not the ptc "
+      "frame");
+  if (d == ctx.device && f == ctx.frame && ctx.rank == 0 && ctx.rendering) {
+    printf("callback %d: checking composited color\n", ctx.calls);
+    c.failures += ctx.finalFrame
+        ? checkColor(ctx.device, ctx.frame, *ctx.opts, ctx.size)
+        : checkFirstFrame(ctx.device, ctx.frame, *ctx.rendering);
+  }
+  ctx.failures += c.failures;
+}
+
+// Every rank, with --callback: one call per render so far; then unset the
+// callback, render again, and expect no further call.
+int checkCallbackCalls(anari::Device d, anari::Frame frame, int rank, int renders)
+{
+  Checker c{rank};
+  c.expect(g_callback.calls == renders,
+      "frame completion callback called " + std::to_string(g_callback.calls)
+          + " times for " + std::to_string(renders) + " renders");
+
+  g_callback.rendering = nullptr;
+  anari::unsetParameter(d, frame, "frameCompletionCallback");
+  anari::commitParameters(d, frame);
+  const int before = g_callback.calls;
+  anari::render(d, frame);
+  anari::wait(d, frame);
+  c.expect(g_callback.calls == before,
+      "frame completion callback called after it was unset");
+
+  if (rank == 0) {
+    printf("%s: frame completion callback called %d times for %d renders, "
+           "then %d times after unset\n",
+        c.failures ? "FAIL" : "PASS",
+        before,
+        renders,
+        g_callback.calls - before);
+  }
+  return c.failures + g_callback.failures;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -604,17 +700,23 @@ int main(int argc, char **argv)
   failures += checkDeviceConformance(lib, d, rank);
 
   const Scene scene = buildScene(d, buildWorld(d, rank, size));
-  const FrameState finalState{kImageSize, opts.colorType, opts.depth};
+  const FrameState finalState{
+      kImageSize, opts.colorType, opts.depth, opts.callback};
   auto frame = anari::newObject<anari::Frame>(d);
+  g_callback = {d, frame, rank, size, &opts};
+  int renders = 0;
 
   if (opts.twoFrames()) {
     const FrameState first{opts.resize ? kImageSize / 2u : kImageSize,
         opts.firstColorType.value_or(opts.colorType),
-        !opts.depth};
+        !opts.depth,
+        opts.callback};
     setAllParameters(d, frame, scene, first);
     anari::commitParameters(d, frame);
+    g_callback.rendering = &first;
     anari::render(d, frame);
     anari::wait(d, frame);
+    renders++;
     if (rank == 0)
       failures += checkFirstFrame(d, frame, first);
     changeParameters(d, frame, scene, first, finalState, opts.unsetAll);
@@ -632,14 +734,20 @@ int main(int argc, char **argv)
                                              : ANARI_UFIXED8_VEC4);
   }
 
+  g_callback.rendering = &finalState;
+  g_callback.finalFrame = true;
   anari::render(d, frame);
   anari::wait(d, frame);
+  renders++;
 
   if (rank == 0) {
     failures += checkColor(d, frame, opts, size);
     failures += opts.depth ? checkDepth(d, frame, size)
                            : checkDepthRefused(d, frame);
   }
+
+  if (opts.callback)
+    failures += checkCallbackCalls(d, frame, rank, renders);
 
   anari::release(d, frame);
   releaseScene(d, scene);

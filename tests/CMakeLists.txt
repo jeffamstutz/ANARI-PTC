@@ -119,6 +119,11 @@ foreach(color ${PTC_TEST_COLORS})
   ptc_add_smoke_tests(${color}_uncommitted --color ${color} --uncommitted)
 endforeach()
 
+# Frame completion callback (ticket 06): called once per render with the ptc
+# handles, after compositing; not called once unset.
+ptc_add_smoke_tests(callback --color ufixed8 --callback)
+ptc_add_smoke_tests(callback_resize --color ufixed8 --resize --depth --callback)
+
 # Failure path: with inverted expectations the pixel check must fail and
 # every rank must exit non-zero.
 set(ranks 2)

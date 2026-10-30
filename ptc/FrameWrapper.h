@@ -48,7 +48,10 @@ namespace ptc {
 
   struct FrameWrapper : public helium::RefCounted
   {
-    FrameWrapper(ANARIDevice d,
+    /*! ptcDevice is the device handle the app holds (passed to its frame
+        completion callback); d and f are the wrapped device and frame */
+    FrameWrapper(ANARIDevice ptcDevice,
+                 ANARIDevice d,
                  ANARIFrame f,
                  FrameWrapperNotificationHandler onObjectDestroy,
                  FrameWrapperStatusHandler reportStatus,
@@ -106,6 +109,10 @@ namespace ptc {
       // composited depth may be mapped. The wrapped frame always renders
       // depth, since compositing needs it.
       bool depthEnabled{false};
+      // The app's frame completion callback. Never forwarded: the wrapped
+      // frame completes before compositing, and would pass its own handles.
+      ANARIFrameCompletionCallback completionCallback{nullptr};
+      const void *completionCallbackUserData{nullptr};
     };
 
     /*! (re)allocates the buffers if the committed size or color type
@@ -127,6 +134,7 @@ namespace ptc {
 
     int m_rank{-1};
 
+    ANARIDevice m_ptcDevice{nullptr};
     ANARIDevice m_device{nullptr};
     ANARIFrame m_frame{nullptr};
 

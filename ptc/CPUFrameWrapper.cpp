@@ -27,12 +27,13 @@ namespace ptc {
   // FrameWrapper definitions ///////////////////////////////////////////////////
 
   CPUFrameWrapper
-  ::CPUFrameWrapper(ANARIDevice d,
+  ::CPUFrameWrapper(ANARIDevice ptcDevice,
+                     ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
                      FrameWrapperStatusHandler reportStatus,
                      MPI_Comm comm)
-    : FrameWrapper(d,f,onObjectDestroy,reportStatus,comm),
+    : FrameWrapper(ptcDevice,d,f,onObjectDestroy,reportStatus,comm),
       compositor(comm)
   {
   }

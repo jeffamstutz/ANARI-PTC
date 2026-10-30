@@ -74,12 +74,13 @@ namespace ptc {
   // FrameWrapper definitions ///////////////////////////////////////////////////
 
   CUDAFrameWrapper
-  ::CUDAFrameWrapper(ANARIDevice d,
+  ::CUDAFrameWrapper(ANARIDevice ptcDevice,
+                     ANARIDevice d,
                      ANARIFrame f,
                      FrameWrapperNotificationHandler onObjectDestroy,
                      FrameWrapperStatusHandler reportStatus,
                      MPI_Comm comm)
-    : FrameWrapper(d,f,onObjectDestroy,reportStatus,comm),
+    : FrameWrapper(ptcDevice,d,f,onObjectDestroy,reportStatus,comm),
       m_deepComp(1, comm)
   {
     m_deepComp.affinitizeGPU();

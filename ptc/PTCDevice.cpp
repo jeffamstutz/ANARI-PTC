@@ -98,7 +98,8 @@ ANARIFrame PTCDevice::newFrame()
 #else
   typedef CPUFrameWrapper FrameWrapperT;
 #endif
-  auto *fw = new FrameWrapperT((ANARIDevice)m_ptd,
+  auto *fw = new FrameWrapperT(this_device(),
+      (ANARIDevice)m_ptd,
       m_ptd->newFrame(),
       [=](const void *f) { this->removeFrameWrapper((FrameWrapper *)f); },
       [=](ANARIStatusSeverity severity, const char *msg) {

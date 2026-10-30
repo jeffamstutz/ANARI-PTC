@@ -27,13 +27,15 @@ namespace ptc {
 
 // FrameWrapper definitions ///////////////////////////////////////////////////
 
-FrameWrapper::FrameWrapper(ANARIDevice d,
+FrameWrapper::FrameWrapper(ANARIDevice ptcDevice,
+    ANARIDevice d,
     ANARIFrame f,
     FrameWrapperNotificationHandler onObjectDestroy,
     FrameWrapperStatusHandler reportStatus,
     MPI_Comm comm)
     : m_onObjectDestroy(onObjectDestroy),
       m_reportStatus(reportStatus),
+      m_ptcDevice(ptcDevice),
       m_device(d),
       m_frame(f)
 {
@@ -76,6 +78,18 @@ void FrameWrapper::setParameter(
     m_pending.depthEnabled = type == ANARI_DATA_TYPE
         && bit_cast<ANARIDataType>(type, mem) == ANARI_FLOAT32;
     return;
+  } else if (name == "frameCompletionCallback") {
+    // Never forwarded: renderFrame() calls it after compositing.
+    m_pending.completionCallback = type == ANARI_FRAME_COMPLETION_CALLBACK
+        ? bit_cast<ANARIFrameCompletionCallback>(type, mem)
+        : TrackedParameters{}.completionCallback;
+    return;
+  } else if (name == "frameCompletionCallbackUserData") {
+    // ANARI_VOID_POINTER parameters pass the pointer value itself as `mem`.
+    m_pending.completionCallbackUserData = type == ANARI_VOID_POINTER
+        ? mem
+        : TrackedParameters{}.completionCallbackUserData;
+    return;
   }
 
   anariSetParameter(m_device, m_frame, _name, type, mem);
@@ -90,6 +104,13 @@ void FrameWrapper::unsetParameter(const char *_name)
     m_pending.colorType = TrackedParameters{}.colorType;
   else if (name == "channel.depth") {
     m_pending.depthEnabled = false; // see setParameter()
+    return;
+  } else if (name == "frameCompletionCallback") {
+    m_pending.completionCallback = TrackedParameters{}.completionCallback;
+    return;
+  } else if (name == "frameCompletionCallbackUserData") {
+    m_pending.completionCallbackUserData =
+        TrackedParameters{}.completionCallbackUserData;
     return;
   }
   anariUnsetParameter(m_device, m_frame, _name);
@@ -276,6 +297,13 @@ void FrameWrapper::renderFrame()
   // Every rank sees the same commits, so all of them skip or composite.
   if (m_bufferSize.x != 0 && m_bufferSize.y != 0)
     composite();
+  // The composited frame is ready (rendering is synchronous), so the
+  // continuation has run before any anariFrameReady() returns.
+  if (auto callback = m_committed.completionCallback) {
+    callback(m_committed.completionCallbackUserData,
+        m_ptcDevice,
+        (ANARIFrame)this);
+  }
 }
 
 } // namespace ptc

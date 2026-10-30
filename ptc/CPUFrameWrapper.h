@@ -24,7 +24,8 @@ namespace ptc {
 
   struct CPUFrameWrapper : public FrameWrapper
   {
-    CPUFrameWrapper(ANARIDevice d,
+    CPUFrameWrapper(ANARIDevice ptcDevice,
+                    ANARIDevice d,
                     ANARIFrame f,
                     FrameWrapperNotificationHandler onObjectDestroy,
                     FrameWrapperStatusHandler reportStatus,
