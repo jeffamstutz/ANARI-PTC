@@ -39,6 +39,13 @@ This project requires
 or
 - `cmake -DPTC_DISABLE_CUDA .. (for explicitly cpu-only build
 
+# Testing
+
+Configure with `-DPTC_BUILD_TESTING=ON`, build, then run `ctest` in the
+build directory. This runs an MPI smoke test (`tests/ptcSmoke.cpp`) on 1, 2
+and 3 ranks with `helide` as the wrapped device. The tests are skipped (with
+a configure-time warning) if `mpiexec` or `helide` cannot be found.
+
 # Installing
 
 - just regular cmake `make install` ...

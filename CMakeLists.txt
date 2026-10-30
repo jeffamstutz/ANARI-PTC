@@ -28,6 +28,7 @@ project(ANARI_PTC VERSION 1.1.0 LANGUAGES C CXX)
 
 # ------------------------------------------------------------------
 option(PTC_DISABLE_CUDA "Explicitly Disable CUDA Support" off)
+option(PTC_BUILD_TESTING "Build the MPI smoke tests (run with ctest)" off)
 if (PTC_DISABLE_CUDA)
   set(USE_CUDA OFF)
 else()
@@ -84,3 +85,9 @@ if ((${CMAKE_CURRENT_SOURCE_DIR} STREQUAL ${CMAKE_SOURCE_DIR}))
 endif()
 
 add_subdirectory(ptc)
+
+if (PTC_BUILD_TESTING)
+  include(GNUInstallDirs)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
