@@ -68,3 +68,14 @@ severity: non-blocking
   only, no action needed.
 - `--depth` support is in `ptcSmoke` but no test registers it. This is
   intended, for ticket 04.
+
+## Resolution (2026-10-30, with the maintainer)
+
+- **Item 1:** the maintainer reinstalled `~/opt/anari/lib/libanari_library_ptc.so` from `~/build/claude/anari-ptc`, so it is no longer stale. The harness's `--expect-library` guard stays.
+- **Item 2:**
+  - `PTC_BUILD_TESTING` stays OFF by default.
+  - Open MPI `--oversubscribe` is added to ticket 14.
+  - The helide lookup and `LD_LIBRARY_PATH` rewiring are noted on ticket 16.
+  - The XFAIL point was superseded by 03. The float32 regex point was superseded by 08.
+- **Item 3:** headers on new files are noted on ticket 15.
+- **Item 4:** history only. `--depth` is now used (04).

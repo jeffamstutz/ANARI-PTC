@@ -14,7 +14,7 @@
 - [ ] Device builds in the SDK tree with `BUILD_PTC_DEVICE=ON`, and the SDK is unaffected with it OFF
 - [ ] Dependencies match decisions in 15
 - [ ] Sources pass the SDK's clang-format
-- [ ] MPI tests registered in SDK ctest and passing locally
+- [ ] MPI tests registered in SDK ctest and passing locally. The harness currently finds helide only via `anari_DIR/../../..` and sets `LD_LIBRARY_PATH` itself; rewire both for the in-tree SDK build (followups/02 item 2)
 - [ ] Device README added; root AGENTS.md device list mentions ptc
 - [ ] Ready to open a PR against `next_release`
 
