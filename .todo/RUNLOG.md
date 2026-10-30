@@ -1,2 +1,3 @@
 - 01 cpu-variant-builds — needs-user (non-blocking) — 9000717 f49e776 44fe13f — followups/01-lifetime-and-tbb.md
 - 02 mpi-test-harness — needs-user (non-blocking) — df422ad 7697907 — followups/02-stale-lib-and-harness-defaults.md
+- 03 report-extension-and-properties — needs-user (non-blocking) — 26a3a20 3bac8c8 — followups/03-extension-reporting-choices.md
