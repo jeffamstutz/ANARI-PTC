@@ -10,3 +10,5 @@
 - [ ] Former messages that carry useful info are reported at `DEBUG`/`INFO`/`WARNING` severity
 - [ ] `PRINT`/`PING` debug macros removed
 - [ ] Harness run on 2 ranks emits no device output on stdout
+- [ ] Unsupported `channel.color` types are rejected at `anariCommitParameters` with `ANARI_STATUS_INVALID_ARGUMENT`, not at render. The misleading "rendered without channel.color" map warning is gone in that case (decided 2026-10-30, followups/08 item 2)
+- [ ] `frameCompletionCallback` fires even when the render failed, after the error is reported (decided 2026-10-30, followups/08 item 3)

@@ -10,3 +10,4 @@
 - [ ] Falling back to helide is reported clearly (or removed, if a parameter makes it unnecessary)
 - [ ] With a nonexistent wrapped library, no API call crashes; object creation returns null and errors are reported
 - [ ] Harness tests: selection via parameter; failure case
+- [ ] Wrapped library/device load failure is reported as `ANARI_SEVERITY_FATAL_ERROR`, not ERROR (decided 2026-10-30, followups/08 item 3)

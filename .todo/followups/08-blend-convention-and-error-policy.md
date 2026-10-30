@@ -23,7 +23,11 @@ for later tickets.
 
 ## 1. CPU and CUDA use different blend conventions, not only different output alpha
 
-severity: blocking (ticket 09)
+severity: non-blocking (was blocking ticket 09; decided 2026-10-30)
+
+**Decision:** treat input as premultiplied, and output the composited alpha. Ticket 09 owns bringing both paths in line, and its doc now has the convention and two new checkboxes. Ticket 16's README wording changed to "premultiplied over".
+
+The basis is that helide and VisRTX agree. VisRTX's rtx device accumulates `outputColor += remainingT*(alpha*refl)` (`gpu/renderer/raygen_helpers.h:210`). It composites the background under that result with alpha carried through (`frame/Frame.cu` `compositeBackground`). It sRGB-encodes the premultiplied linear RGB per channel. helide's `accumulateValue` front-to-back gives the same result on a transparent background. So sRGB decode, then composite, then encode is exact, and the concern below about linearizing premultiplied sRGB does not apply.
 
 The implementer described the divergence as "CPU keeps composited alpha,
 CUDA forces alpha to 1". The real difference is larger:
@@ -134,3 +138,16 @@ severity: non-blocking
 - **Bookkeeping.** The checkboxes and `Status:` in
   `08-cpu-compositor-float-and-ub.md` were not updated. 03 to 06 had the
   same gap.
+
+## Resolution (2026-10-30, with the maintainer)
+
+- **Item 1:** decided: premultiplied input, composited alpha. Ticket 09 owns the fix, and 09 and 16 are updated (see the note under item 1).
+- **Item 2:** keep the rejection, but move it to commit with `INVALID_ARGUMENT`. Checkbox added to ticket 14.
+- **Item 3:**
+  - Asymmetric failures get a one-int `MPI_Allreduce` success check; checkbox added to ticket 11.
+  - Wrapped library load failure is reported as FATAL_ERROR; checkbox added to ticket 12.
+  - The completion callback fires even on a failed render; checkbox added to ticket 14.
+- **Item 4:** float32 blending coverage now comes from 09's new checkbox. The tests for negative/NaN depth ordering and the unorm8 clamp stay open as non-blocking.
+- **Item 5:**
+  - The float3 cast and the non-root depth copy are added to ticket 13, along with a note that `prepare()` is already deduplicated.
+  - The MPI `int` count note is added to ticket 16.

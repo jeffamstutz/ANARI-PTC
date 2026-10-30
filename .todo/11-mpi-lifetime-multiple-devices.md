@@ -11,3 +11,4 @@
 - [ ] App-initialized MPI is never finalized by ptc
 - [ ] Harness test: two devices, release the first, keep rendering with the second
 - [ ] Harness test: app doesn't call `MPI_Init`; device init/teardown succeeds
+- [ ] Asymmetric failure doesn't hang: before compositing, ranks agree on success with a one-int `MPI_Allreduce`. If any rank failed in `allocate()`/`composite()`, every rank reports an error and skips the collectives (decided 2026-10-30, followups/08 item 3)

@@ -13,3 +13,7 @@
 - [ ] One `prepare()` per frame
 - [ ] Non-root ranks skip the output copy
 - [ ] Harness passes on 2 ranks with 2 GPUs and with both ranks on one GPU
+- [ ] The `(const float3&)fragColor` reference cast in `deepCompositing.cu` is gone (09 may already have removed it while fixing the blend; see followups/08 item 5)
+- [ ] Non-root ranks also skip the depth output copy that 04 added (followups/04)
+
+Note: the duplicate `prepare()` call was already removed in 05 (afb8f83). Verify it and tick that box; there's no work left (followups/05).
