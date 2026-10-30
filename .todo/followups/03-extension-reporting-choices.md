@@ -106,3 +106,13 @@ severity: non-blocking
 - On wrapped-library load failure (`m_ptd == nullptr`), `extension` still
   returns a list holding only the MPI extension. Graceful handling belongs
   to ticket 12.
+
+## Resolution (2026-10-30, with the maintainer)
+
+- **Item 1:** keep the library-level list and document it. Ticket 12 has a checkbox to warn on fallback on both paths and to document the scope.
+- **Item 2:** the "query then release" test is added to ticket 11.
+- **Item 3:** documented as an assumption (homogeneous ranks) in 16's README list.
+- **Item 4:** ptc reports its own `version` and forwards `anariVersion.*`. The checkbox is on ticket 12.
+- **Item 5:** confirmed as is.
+- **Item 6:** resolved by 08.
+- **Item 7:** covered by ticket 12.
