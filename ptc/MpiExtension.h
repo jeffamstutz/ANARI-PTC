@@ -10,6 +10,7 @@
 #include <anari/anari.h>
 // std
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,12 +34,6 @@ struct ExtensionList
   std::vector<const char *> m_list;
 };
 
-// Load the library to wrap: $PTC_ANARI_LIBRARY, or 'helide' if that is unset
-// or fails to load. 'usedFallback' tells whether 'helide' was the fallback.
-ANARILibrary loadWrappedLibrary(ANARIStatusCallback statusCB,
-    const void *statusCBUserPtr,
-    bool *usedFallback = nullptr);
-
 // Whether this is the (object, parameter) KHR_DATA_PARALLEL_MPI defines
 bool isMpiCommunicatorParameter(
     ANARIDataType objectType, const char *name, ANARIDataType type);
@@ -47,13 +42,17 @@ bool isMpiCommunicatorParameter(
 const void *mpiCommunicatorInfo(const char *infoName, ANARIDataType infoType);
 
 // A wrapped device's frame parameter lists (anariGetObjectInfo 'parameter')
-// with 'mpiCommunicator' added, cached per frame subtype
+// with 'mpiCommunicator' added, cached per frame subtype. Parameter names
+// point into the wrapped device's storage, so a list is valid only while the
+// wrapped device lives.
 struct FrameParameterLists
 {
-  const ANARIParameter *get(
+  // nullptr if 'wrapped' is nullptr (unknown subtype)
+  const ANARIParameter *withMpiCommunicator(
       const char *subtype, const ANARIParameter *wrapped);
 
  private:
+  std::mutex m_mutex;
   std::map<std::string, std::vector<ANARIParameter>> m_lists;
 };
 

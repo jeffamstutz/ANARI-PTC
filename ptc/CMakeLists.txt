@@ -27,6 +27,7 @@ if (USE_CUDA)
     MpiExtension.cpp
     PTCDevice.cpp
     PTCLibrary.cpp
+    WrappedLibrary.cpp
     FrameWrapper.cpp
     CUDAFrameWrapper.cu)
   set_source_files_properties(CUDAFrameWrapper.cu
@@ -43,6 +44,7 @@ else()
     MpiExtension.cpp
     PTCDevice.cpp
     PTCLibrary.cpp
+    WrappedLibrary.cpp
     FrameWrapper.cpp
     CPUFrameWrapper.cpp
   )

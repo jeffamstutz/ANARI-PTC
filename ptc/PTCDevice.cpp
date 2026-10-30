@@ -27,6 +27,7 @@
 #else
 #include "CPUFrameWrapper.h"
 #endif
+#include "WrappedLibrary.h"
 
 namespace ptc {
 
@@ -347,7 +348,7 @@ const void *PTCDevice::getObjectInfo(ANARIDataType objectType,
   if (objectType == ANARI_FRAME && infoName
       && std::strcmp(infoName, "parameter") == 0
       && infoType == ANARI_PARAMETER_LIST) {
-    return m_frameParameterLists.get(
+    return m_frameParameterLists.withMpiCommunicator(
         objectSubtype, (const ANARIParameter *)info);
   }
   return info;
@@ -490,6 +491,7 @@ int PTCDevice::deviceGetProperty(
 
   if (name && std::strcmp(name, "extension") == 0
       && type == ANARI_STRING_LIST) {
+    std::lock_guard<std::mutex> lock(m_extensionsMutex);
     if (!m_extensions) {
       const char *const *wrapped = nullptr;
       if (m_ptd) {

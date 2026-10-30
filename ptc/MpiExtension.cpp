@@ -3,7 +3,6 @@
 #include "MpiExtension.h"
 // std
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 
 namespace ptc {
@@ -26,21 +25,6 @@ ExtensionList::ExtensionList(const char *const *wrapped)
 const char **ExtensionList::data()
 {
   return m_list.data();
-}
-
-ANARILibrary loadWrappedLibrary(ANARIStatusCallback statusCB,
-    const void *statusCBUserPtr,
-    bool *usedFallback)
-{
-  ANARILibrary lib = nullptr;
-  if (const char *libName = getenv("PTC_ANARI_LIBRARY"))
-    lib = anariLoadLibrary(libName, statusCB, statusCBUserPtr);
-
-  if (usedFallback)
-    *usedFallback = !lib;
-  if (!lib)
-    lib = anariLoadLibrary("helide", statusCB, statusCBUserPtr);
-  return lib;
 }
 
 bool isMpiCommunicatorParameter(
@@ -70,12 +54,16 @@ const void *mpiCommunicatorInfo(const char *infoName, ANARIDataType infoType)
   return nullptr;
 }
 
-const ANARIParameter *FrameParameterLists::get(
+const ANARIParameter *FrameParameterLists::withMpiCommunicator(
     const char *subtype, const ANARIParameter *wrapped)
 {
+  if (!wrapped)
+    return nullptr;
+
+  std::lock_guard<std::mutex> lock(m_mutex);
   auto &list = m_lists[subtype ? subtype : ""];
   if (list.empty()) {
-    for (auto p = wrapped; p && p->name; p++) {
+    for (auto p = wrapped; p->name; p++) {
       if (!isMpiCommunicatorParameter(ANARI_FRAME, p->name, p->type))
         list.push_back(*p);
     }

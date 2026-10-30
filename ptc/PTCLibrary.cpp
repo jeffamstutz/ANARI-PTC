@@ -16,10 +16,12 @@
 
 #include "MpiExtension.h"
 #include "PTCDevice.h"
+#include "WrappedLibrary.h"
 #include "anari/backend/LibraryImpl.h"
 #include "anari_library_ptc_export.h"
 // std
 #include <memory>
+#include <mutex>
 
 namespace ptc {
 
@@ -32,7 +34,8 @@ struct PTCLibrary : public anari::LibraryImpl
   const char **getDeviceExtensions(const char *deviceType) override;
 
  private:
-  std::unique_ptr<ExtensionList> m_extensions;
+  std::mutex m_extensionsMutex;
+  std::unique_ptr<ExtensionList> m_extensions; // built on first query
 };
 
 // Definitions ////////////////////////////////////////////////////////////////
@@ -51,6 +54,7 @@ ANARIDevice PTCLibrary::newDevice(const char * /*subtype*/)
 // KHR_DATA_PARALLEL_MPI. Every ptc device subtype is the same device.
 const char **PTCLibrary::getDeviceExtensions(const char * /*deviceType*/)
 {
+  std::lock_guard<std::mutex> lock(m_extensionsMutex);
   if (!m_extensions) {
     const char *const *wrapped = nullptr;
     ANARILibrary lib =

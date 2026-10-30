@@ -20,6 +20,7 @@
 #include "helium/BaseDevice.h"
 // std
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "FrameWrapper.h"
@@ -230,7 +231,8 @@ namespace ptc {
   uint32_t m_refCount{1};
   anari::DeviceImpl *m_ptd{nullptr};
   std::vector<FrameWrapper *> m_frameWrappers;
-  std::unique_ptr<ExtensionList> m_extensions;
+  std::mutex m_extensionsMutex;
+  std::unique_ptr<ExtensionList> m_extensions; // built on first query
   FrameParameterLists m_frameParameterLists;
 
   static int s_numMpiPTCDevices;
