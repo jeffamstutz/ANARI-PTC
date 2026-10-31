@@ -100,6 +100,11 @@
 // disabled between frames too.
 // Without --unset-all, parameters that go away are unset one by one.
 //
+// Built against the CUDA ptc (PTC_TEST_CUDA), every rank first makes a GPU
+// current that differs from the one ptc picks for it, when there is more
+// than one, and checks that ptc leaves it current: after creating, committing
+// and rendering the frame, and from inside the frame completion callback.
+//
 // Every rank exits non-zero if any rank recorded a failure.
 
 // anariGetDeviceExtensionStruct() is implemented in this translation unit
@@ -108,6 +113,9 @@
 #include <anari/anari_cpp.hpp>
 #include <anari/anari_cpp/ext/linalg.h>
 #include <mpi.h>
+#ifdef PTC_TEST_CUDA
+#include "cudaDevice.h"
+#endif
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -695,6 +703,64 @@ struct CallbackContext
 
 CallbackContext g_callback;
 
+// The app's current CUDA device (PTC_TEST_CUDA) /////////////////////////////
+
+// The GPU this rank makes current before loading ptc; -1 without CUDA
+int g_appCudaDevice = -1;
+int g_cudaDeviceFailures = 0;
+
+// Makes a GPU current that ptc would not pick for this rank if there are
+// several: ptc picks by rank among the ranks on the node, this the next one.
+void selectAppCudaDevice(int rank)
+{
+#ifdef PTC_TEST_CUDA
+  const int count = cudaDeviceCount();
+  if (count == 0) {
+    printf("FAIL: rank %d: no CUDA device\n", rank);
+    g_cudaDeviceFailures++;
+    return;
+  }
+  g_appCudaDevice = (rank + 1) % count;
+  if (!makeCudaDeviceCurrent(g_appCudaDevice)) {
+    printf("FAIL: rank %d: cannot make GPU %d current\n", rank, g_appCudaDevice);
+    g_cudaDeviceFailures++;
+    g_appCudaDevice = -1;
+  }
+#else
+  (void)rank;
+#endif
+}
+
+// ptc must not change the calling thread's current CUDA device.
+void checkCudaDevice(const char *when)
+{
+#ifdef PTC_TEST_CUDA
+  if (g_appCudaDevice < 0)
+    return;
+  const int current = currentCudaDevice();
+  if (current != g_appCudaDevice) {
+    int rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    printf("FAIL: rank %d: current CUDA device is %d %s, the app made %d "
+           "current\n",
+        rank,
+        current,
+        when,
+        g_appCudaDevice);
+    g_cudaDeviceFailures++;
+  }
+#else
+  (void)when;
+#endif
+}
+
+void renderAndWait(anari::Device d, anari::Frame frame)
+{
+  anari::render(d, frame);
+  anari::wait(d, frame);
+  checkCudaDevice("after rendering the frame");
+}
+
 // What mpiCommunicator points to. ptc may only read it until the frame's
 // commit returns, so commitFrame() clobbers it afterwards.
 MPI_Comm g_commParameter = MPI_COMM_NULL;
@@ -709,6 +775,7 @@ void commitFrame(anari::Device d, anari::Frame frame)
 {
   anari::commitParameters(d, frame);
   g_commParameter = MPI_COMM_NULL;
+  checkCudaDevice("after committing the frame");
 }
 
 // Set every parameter of `state` (and the scene objects) on the frame.
@@ -1137,6 +1204,7 @@ void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
   // from here on, everything is reached through the app's user data
   auto &ctx = *(CallbackContext *)userData;
   ctx.calls++;
+  checkCudaDevice("inside the frame completion callback");
   Checker c{ctx.rank};
   c.expect(d == ctx.device,
       "frame completion callback got a device handle that is not the ptc "
@@ -1167,8 +1235,7 @@ int checkCallbackCalls(anari::Device d, anari::Frame frame, int rank, int render
   anari::unsetParameter(d, frame, "frameCompletionCallback");
   commitFrame(d, frame);
   const int before = g_callback.calls;
-  anari::render(d, frame);
-  anari::wait(d, frame);
+  renderAndWait(d, frame);
   c.expect(g_callback.calls == before,
       "frame completion callback called after it was unset");
 
@@ -1204,6 +1271,8 @@ int main(int argc, char **argv)
   // because the last one failed
   if (opts.failLastRank && rank == size - 1)
     opts.colorType = ANARI_FLOAT32_VEC3;
+
+  selectAppCudaDevice(rank);
 
   auto lib = anari::loadLibrary("ptc", statusFunc);
   if (!lib) {
@@ -1258,6 +1327,7 @@ int main(int argc, char **argv)
       opts.callback,
       &finalLayout};
   auto frame = anari::newObject<anari::Frame>(d);
+  checkCudaDevice("after creating the frame");
   g_callback = {d, frame, rank, &finalLayout, &opts};
   int renders = 0;
 
@@ -1271,8 +1341,7 @@ int main(int argc, char **argv)
     setAllParameters(d, frame, scene, first);
     commitFrame(d, frame);
     g_callback.rendering = &first;
-    anari::render(d, frame);
-    anari::wait(d, frame);
+    renderAndWait(d, frame);
     renders++;
     g_callback.rendering = nullptr; // `first` goes out of scope
     if (firstLayout.rank == 0)
@@ -1302,8 +1371,7 @@ int main(int argc, char **argv)
   g_callback.finalFrame = true;
   const int errorsBefore = g_colorErrors;
   const int anyErrorsBefore = g_errors;
-  anari::render(d, frame);
-  anari::wait(d, frame);
+  renderAndWait(d, frame);
   renders++;
 
   // Every rank: a render error comes through the status callback (the
@@ -1345,6 +1413,10 @@ int main(int argc, char **argv)
     failures += checkCallbackCalls(d, frame, rank, renders);
 
   anari::release(d, frame);
+  checkCudaDevice("after releasing the frame");
+  failures += g_cudaDeviceFailures;
+  if (g_appCudaDevice >= 0 && !g_cudaDeviceFailures)
+    printf("PASS: rank %d: GPU %d stayed current\n", rank, g_appCudaDevice);
   releaseScene(d, scene);
   anari::release(d, d);
   anari::unloadLibrary(lib);

@@ -139,8 +139,13 @@ free its communicator after the commit.
   compositing: every rank skips compositing and reports an error, instead
   of the others hanging. Committing a communicator agrees the same way on
   whether every rank created its compositor. A failure *inside* the
-  compositor's communication (or, with CUDA, inside GPU selection while
-  creating the compositor) can still leave the other ranks waiting.
+  compositor's communication can still leave the other ranks waiting.
+- With CUDA, a frame's first communicator picks the GPU it composites on:
+  its rank among that communicator's ranks on the same node, modulo the
+  number of visible GPUs. Later communicators keep that GPU. ptc makes it
+  current only around its own CUDA work and then restores the calling
+  thread's current CUDA context, so the app and the wrapped device never
+  see it change.
 
 ## MPI initialization and device lifetime
 

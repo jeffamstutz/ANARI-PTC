@@ -39,6 +39,13 @@ target_link_libraries(ptcSmoke PRIVATE anari::anari MPI::MPI_CXX)
 target_compile_definitions(ptcSmoke PRIVATE ${PTC_TEST_VERSION_DEFINITIONS})
 # ptc is loaded at runtime by anari::loadLibrary, so make sure it is built
 add_dependencies(ptcSmoke anari_library_ptc)
+if (USE_CUDA)
+  # checks that ptc leaves the app's current CUDA device alone
+  find_package(CUDAToolkit REQUIRED)
+  target_sources(ptcSmoke PRIVATE cudaDevice.cpp)
+  target_link_libraries(ptcSmoke PRIVATE CUDA::cudart)
+  target_compile_definitions(ptcSmoke PRIVATE PTC_TEST_CUDA=1)
+endif()
 
 set(PTC_TEST_RANKS 1 2 3)
 set(PTC_TEST_COLORS ufixed8 float32)
@@ -193,6 +200,26 @@ ptc_add_smoke_tests(ufixed8_blend_split --color ufixed8 --background blend
 # each half composites its own ids
 ptc_add_smoke_tests(ids_split --color ufixed8 --comm split --ids
   ${PTC_SPLIT_RANKS})
+
+# CUDA GPU sharing (ticket 13): the tests above give each rank on the node its
+# own GPU when there are enough; these run every rank on one GPU.
+if (USE_CUDA)
+  function(ptc_add_one_gpu_tests name)
+    ptc_add_smoke_tests(onegpu_${name} ${ARGN})
+    cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "RANKS")
+    foreach(ranks ${arg_RANKS})
+      set_property(TEST ptc_smoke_onegpu_${name}_${ranks}ranks
+        APPEND PROPERTY ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+    endforeach()
+  endfunction()
+  ptc_add_one_gpu_tests(ufixed8_depth --color ufixed8 --depth RANKS 2 3)
+  ptc_add_one_gpu_tests(float32_resize --color float32 --resize RANKS 2)
+  ptc_add_one_gpu_tests(callback --color ufixed8 --callback RANKS 2)
+  ptc_add_one_gpu_tests(split_to_world --first-comm split --comm world
+    --depth RANKS 2 4)
+  ptc_add_one_gpu_tests(fail_last_rank --color ufixed8 --fail-last-rank
+    RANKS 2)
+endif()
 
 # Wrapped library selection (ticket 12). The device parameter
 # 'wrappedLibrary' wins over PTC_ANARI_LIBRARY, which here names a library

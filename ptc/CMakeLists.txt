@@ -33,8 +33,11 @@ if (USE_CUDA)
   set_source_files_properties(CUDAFrameWrapper.cu
     PROPERTIES COMPILE_FLAGS "--expt-relaxed-constexpr"
     )
+  # the driver API saves and restores the app's current CUDA context
+  find_package(CUDAToolkit REQUIRED)
   project_link_libraries(
     deepCompositing
+    CUDA::cuda_driver
     anari::helium
     anari::anari
   )
