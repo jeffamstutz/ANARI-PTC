@@ -439,14 +439,15 @@ const void *PTCDevice::frameBufferMap(ANARIFrame f,
     ANARIDataType *pixelType)
 {
   return guarded("anariMapFrame", (const void *)nullptr, [&] {
-    return frameWrapper(f)->frameBufferMap(channel, width, height, pixelType);
+    return checkedFrameWrapper(f)->frameBufferMap(
+        channel, width, height, pixelType);
   });
 }
 
 void PTCDevice::frameBufferUnmap(ANARIFrame f, const char *channel)
 {
   guarded("anariUnmapFrame", [&] {
-    frameWrapper(f)->frameBufferUnmap(channel);
+    checkedFrameWrapper(f)->frameBufferUnmap(channel);
   });
 }
 
@@ -455,21 +456,21 @@ void PTCDevice::frameBufferUnmap(ANARIFrame f, const char *channel)
 void PTCDevice::renderFrame(ANARIFrame f)
 {
   guarded("anariRenderFrame", [&] {
-    frameWrapper(f)->renderFrame();
+    checkedFrameWrapper(f)->renderFrame();
   });
 }
 
 int PTCDevice::frameReady(ANARIFrame f, ANARIWaitMask m)
 {
   return guarded("anariFrameReady", 0, [&] {
-    return frameWrapper(f)->frameReady(m);
+    return checkedFrameWrapper(f)->frameReady(m);
   });
 }
 
 void PTCDevice::discardFrame(ANARIFrame f)
 {
   guarded("anariDiscardFrame", [&] {
-    frameWrapper(f)->discardFrame();
+    checkedFrameWrapper(f)->discardFrame();
   });
 }
 
@@ -576,7 +577,7 @@ anari::DeviceImpl &PTCDevice::wrapped()
   return *m_ptd;
 }
 
-FrameWrapper *PTCDevice::frameWrapper(ANARIFrame f)
+FrameWrapper *PTCDevice::checkedFrameWrapper(ANARIFrame f)
 {
   if (!isFrameHandle(f))
     throw std::runtime_error("not a frame of this device");

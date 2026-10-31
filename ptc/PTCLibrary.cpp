@@ -59,8 +59,8 @@ void PTCLibrary::report(
         nullptr,
         ANARI_LIBRARY,
         severity,
-        severity <= ANARI_SEVERITY_WARNING ? ANARI_STATUS_NO_ERROR
-                                           : ANARI_STATUS_UNKNOWN_ERROR,
+        severity <= ANARI_SEVERITY_ERROR ? ANARI_STATUS_UNKNOWN_ERROR
+                                         : ANARI_STATUS_NO_ERROR,
         msg.c_str());
   }
 }

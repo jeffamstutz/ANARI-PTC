@@ -220,7 +220,7 @@ namespace ptc {
   // The wrapped device, after initDevice(); throws if there is none
   anari::DeviceImpl &wrapped();
   // 'f' as a frame of this device; throws if it isn't one
-  FrameWrapper *frameWrapper(ANARIFrame f);
+  FrameWrapper *checkedFrameWrapper(ANARIFrame f);
 
   /*! initializes MPI privately unless it is already; if ptc owns MPI, this
       device then keeps it initialized until it is destroyed */
@@ -289,8 +289,8 @@ inline void PTCDevice::reportMessage(
       this_device(),
       ANARI_OBJECT,
       severity,
-      severity <= ANARI_SEVERITY_WARNING ? ANARI_STATUS_NO_ERROR
-                                         : ANARI_STATUS_UNKNOWN_ERROR,
+      severity <= ANARI_SEVERITY_ERROR ? ANARI_STATUS_UNKNOWN_ERROR
+                                       : ANARI_STATUS_NO_ERROR,
       msg.c_str());
 }
 

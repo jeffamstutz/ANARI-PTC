@@ -8,6 +8,12 @@ namespace ptc {
 
 static const char *DEFAULT_LIBRARY = "helide";
 
+static std::string loadFailure(const std::string &name, const char *source)
+{
+  return "failed to load the wrapped ANARI library '" + name + "' (" + source
+      + ")";
+}
+
 WrappedLibrary loadWrappedLibrary(const std::string &fromParameter,
     ANARIStatusCallback statusCB,
     const void *statusCBUserPtr)
@@ -20,27 +26,23 @@ WrappedLibrary loadWrappedLibrary(const std::string &fromParameter,
   };
 
   if (!fromParameter.empty()) {
-    if (!load(fromParameter)) {
-      w.failure = "failed to load the wrapped ANARI library '" + fromParameter
-          + "' (device parameter 'wrappedLibrary')";
-    }
+    if (!load(fromParameter))
+      w.failure = loadFailure(fromParameter, "device parameter 'wrappedLibrary'");
     return w;
   }
 
   const char *fromEnv = getenv("PTC_ANARI_LIBRARY");
-  if (fromEnv && *fromEnv) {
+  const bool haveEnv = fromEnv && *fromEnv;
+  if (haveEnv) {
     if (load(fromEnv))
       return w;
-    w.fallbackWarning = std::string("failed to load the wrapped ANARI library '")
-        + fromEnv + "' (PTC_ANARI_LIBRARY); falling back to '"
-        + DEFAULT_LIBRARY + "'";
+    w.fallbackWarning = loadFailure(fromEnv, "PTC_ANARI_LIBRARY")
+        + "; falling back to '" + DEFAULT_LIBRARY + "'";
   }
 
   if (!load(DEFAULT_LIBRARY)) {
-    w.failure = std::string("failed to load the wrapped ANARI library '")
-        + DEFAULT_LIBRARY + "'"
-        + (fromEnv && *fromEnv ? " (fallback for PTC_ANARI_LIBRARY)"
-                               : " (the default)");
+    w.failure = loadFailure(DEFAULT_LIBRARY,
+        haveEnv ? "fallback for PTC_ANARI_LIBRARY" : "the default");
   }
   return w;
 }
