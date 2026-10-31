@@ -9,7 +9,7 @@
 - frame completion callback semantics: it runs synchronously on the app thread inside `anariRenderFrame`, after compositing, on every rank (every rank of the frame's communicator once 07 lands). It fires even when the render failed, and re-entrant render or commit from inside it is refused (decided 2026-10-30, followups/06 and 08)
 - that apps must release frames before releasing the ptc device. Releasing the device first is unsupported: it leads to a use-after-free and teardown after `MPI_Finalize` (decided 2026-10-30, followups/01 item 2)
 
-**Blocked by:** 15 (Upstream scope decisions), 03 (Device reports KHR_DATA_PARALLEL_MPI), 04 (Composited depth channel), 05 (Frame parameter tracking), 06 (Frame completion callback), 07 (Honor mpiCommunicator)
+**Blocked by:** 15 (Upstream scope decisions), 03 (Device reports KHR_DATA_PARALLEL_MPI), 04 (Composited depth channel), 05 (Frame parameter tracking), 06 (Frame completion callback), 07 (Honor mpiCommunicator), 17 (Remove the CUDA compositing path)
 
 **Status:** ready-for-agent
 
