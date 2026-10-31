@@ -11,3 +11,4 @@
 - 10 other-frame-channels — needs-user (non-blocking) — 338e66a 62e2241 — followups/10-id-compositing-contracts.md
 - 11 mpi-lifetime-multiple-devices — needs-user (non-blocking) — 5f0e01f 166d541 — followups/11-mpi-lifetime-and-agreement-scope.md
 - 12 wrapped-device-selection — needs-user (non-blocking) — 9debfc4 46fae0a — followups/12-selection-precedence-and-policy.md
+- 13 cuda-compositor-hygiene — needs-user (non-blocking) — 29a3d0d 256ea7d — followups/13-gpu-selection-policy-and-driver-dep.md
