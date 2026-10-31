@@ -232,7 +232,7 @@ namespace ptc {
       cudaGetDeviceProperties(&prop, m_gpu);
       const std::string msg = "compositing on GPU " + std::to_string(m_gpu)
           + " (" + prop.name + ")";
-      m_reportStatus(ANARI_SEVERITY_INFO, msg.c_str());
+      reportStatus(ANARI_SEVERITY_INFO, msg);
     }
     // the compositor also switches to it for its own CUDA calls (restoring
     // only the device, not the app's context: CurrentGPU does that)

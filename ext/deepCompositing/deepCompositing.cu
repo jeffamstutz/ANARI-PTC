@@ -26,7 +26,12 @@
 // #include <thrust/device_ptr.h>
 #include <cub/cub.cuh>  
     
-#define PRINT_STATS 1
+// Opt-in debug output on stdout (rank and GPU banner, traffic stats);
+// off by default, since a library must not print: build with
+// -DDC_VERBOSE=1 to get it.
+#ifndef DC_VERBOSE
+# define DC_VERBOSE 0
+#endif
 
 namespace dc {
 
@@ -289,8 +294,10 @@ namespace dc {
     cudaGetDeviceProperties(&prop, gpuID);
     std::string gpuName = prop.name;
     this->affinitizedGPU = gpuID;
+#if DC_VERBOSE
     printf("#brix.mpi: workers rank #%i on host %s GPU #%i (%s)\n",
            rank,hostName.c_str(),gpuID,gpuName.c_str());
+#endif
     MPI_CALL(Barrier(comm));
     CUDA_CALL(SetDevice(gpuID));
     // enablePeerAccess();
@@ -606,8 +613,10 @@ namespace dc {
                           ColorFormat format)
   {
     CUDA_SYNC_CHECK();
+#if DC_VERBOSE
     if (affinitizedGPU < 0)
       std::cout << "WARNING: NOT AFFINITIZED!" << std::endl;
+#endif
       
     // double t0 = getCurrentTime();
     prof_all.enter();
@@ -1081,6 +1090,7 @@ namespace dc {
     }
     CUDA_SYNC_CHECK();
 
+#if DC_VERBOSE
     static int g_pass = 0;
     if (g_pass++ == 0)
       printf("rank %i: bytes in/out for counters: %.2fMB/out %.2fMB, frags: %.2fMB/%.2fMB, total: %.2fMB/%.2fMB \n",
@@ -1092,6 +1102,7 @@ namespace dc {
              float(stat_numBytesCountersIn+stat_numBytesFragsIn)/(1024*1024),
              float(stat_numBytesCountersOut+stat_numBytesFragsOut)/(1024*1024)
              );
+#endif
     // double t1 = getCurrentTime();
     // if (rank == 0)
     //   std::cout << "time in finish " << 1000*(t1-t0) << " ms" << std::endl;

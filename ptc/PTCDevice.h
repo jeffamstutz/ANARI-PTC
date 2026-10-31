@@ -232,9 +232,14 @@ namespace ptc {
   bool isFrameHandle(ANARIObject o);
   void removeFrameWrapper(FrameWrapper *fw);
 
+  /*! reports through the status callback, with ANARI_STATUS_NO_ERROR
+      below ERROR and ANARI_STATUS_UNKNOWN_ERROR from ERROR up */
   template <typename... Args>
   void reportMessage(
       ANARIStatusSeverity, const char *fmt, Args &&...args) const;
+  /*! reports 'msg' through the status callback with this status code */
+  void reportStatus(
+      ANARIStatusSeverity, ANARIStatusCode, const char *msg) const;
 
   // No exception may escape through the C API: every entry point runs its
   // body through guarded(), which reports an exception as an ERROR through
@@ -276,22 +281,27 @@ template <typename... Args>
 inline void PTCDevice::reportMessage(
     ANARIStatusSeverity severity, const char *fmt, Args &&...args) const
 {
-  auto statusCB = defaultStatusCallback();
-  if (!statusCB)
+  if (!defaultStatusCallback())
     return;
-
-  const void *statusCBUserPtr = defaultStatusCallbackUserPtr();
-
   auto msg = helium::string_printf(fmt, std::forward<Args>(args)...);
-
-  statusCB(statusCBUserPtr,
-      this_device(),
-      this_device(),
-      ANARI_OBJECT,
-      severity,
+  reportStatus(severity,
       severity <= ANARI_SEVERITY_ERROR ? ANARI_STATUS_UNKNOWN_ERROR
                                        : ANARI_STATUS_NO_ERROR,
       msg.c_str());
+}
+
+inline void PTCDevice::reportStatus(
+    ANARIStatusSeverity severity, ANARIStatusCode code, const char *msg) const
+{
+  if (auto statusCB = defaultStatusCallback()) {
+    statusCB(defaultStatusCallbackUserPtr(),
+        this_device(),
+        this_device(),
+        ANARI_OBJECT,
+        severity,
+        code,
+        msg);
+  }
 }
 
 template <typename R, typename F>

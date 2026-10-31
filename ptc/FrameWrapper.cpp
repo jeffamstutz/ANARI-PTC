@@ -75,6 +75,28 @@ void nearestRecord(void *in, void *inout, int *len, MPI_Datatype *type)
   }
 }
 
+/*! 'type', and the type it names if it is ANARI_DATA_TYPE, for messages */
+std::string describeType(ANARIDataType type, const void *mem)
+{
+  std::string result = anari::toString(type);
+  if (type == ANARI_DATA_TYPE && mem)
+    result += std::string(" ") + anari::toString(*(const ANARIDataType *)mem);
+  return result;
+}
+
+/*! whether a channel parameter set as 'type' (value 'mem') is an
+    ANARI_DATA_TYPE naming 'want' (then 'on' says so) or ANARI_UNKNOWN */
+bool isChannelType(
+    ANARIDataType type, const void *mem, ANARIDataType want, bool &on)
+{
+  on = false;
+  if (type != ANARI_DATA_TYPE)
+    return false;
+  const auto value = bit_cast<ANARIDataType>(type, mem);
+  on = value == want;
+  return on || value == ANARI_UNKNOWN;
+}
+
 } // namespace
 
 // FrameWrapper definitions ///////////////////////////////////////////////////
@@ -117,43 +139,88 @@ void FrameWrapper::setParameter(
     const char *_name, ANARIDataType type, const void *mem)
 {
   // A value of the wrong type reads as unset, as it does for the wrapped
-  // frame (helium's getParam).
+  // frame (helium's getParam); the next commit warns about it.
   std::string_view name = _name;
+  if (auto d = m_pendingDiagnostics.find(name); d != m_pendingDiagnostics.end())
+    m_pendingDiagnostics.erase(d);
+
   if (name == "size") {
-    m_pending.size = type == ANARI_UINT32_VEC2
-        ? bit_cast<anari::math::uint2>(type, mem)
-        : TrackedParameters{}.size;
+    const bool ok = type == ANARI_UINT32_VEC2;
+    if (!ok) {
+      warnAtCommit(
+          name, type, mem, "ANARI_UINT32_VEC2", "treated as unset (0x0)");
+    }
+    m_pending.size =
+        ok ? bit_cast<anari::math::uint2>(type, mem) : TrackedParameters{}.size;
   } else if (name == "channel.color") {
-    m_pending.colorType = type == ANARI_DATA_TYPE
-        ? bit_cast<ANARIDataType>(type, mem)
-        : TrackedParameters{}.colorType;
+    if (type != ANARI_DATA_TYPE) {
+      warnAtCommit(name, type, mem, "an ANARI_DATA_TYPE", "treated as unset");
+      m_pending.colorType = TrackedParameters{}.colorType;
+    } else {
+      m_pending.colorType = bit_cast<ANARIDataType>(type, mem);
+      // kept, so that the frame fails to render on this rank, and the
+      // ranks agree to fail together
+      if (!isCompositableColorType(m_pending.colorType)) {
+        m_pendingDiagnostics[std::string(name)] = {ANARI_SEVERITY_ERROR,
+            ANARI_STATUS_INVALID_ARGUMENT,
+            std::string("cannot composite 'channel.color' of type ")
+                + anari::toString(m_pending.colorType)
+                + " (supported are UFIXED8_VEC4, UFIXED8_RGBA_SRGB and "
+                  "FLOAT32_VEC4): the frame cannot be rendered until it is "
+                  "set to one of them or unset"};
+      }
+    }
   } else if (name == "channel.depth") {
     // Never forwarded: the wrapped frame keeps rendering FLOAT32 depth for
     // compositing. Only FLOAT32 is a valid depth type (as in helide).
-    m_pending.depthEnabled = type == ANARI_DATA_TYPE
-        && bit_cast<ANARIDataType>(type, mem) == ANARI_FLOAT32;
+    bool on = false;
+    if (!isChannelType(type, mem, ANARI_FLOAT32, on)) {
+      warnAtCommit(name,
+          type,
+          mem,
+          "ANARI_DATA_TYPE ANARI_FLOAT32",
+          "depth is not composited");
+    }
+    m_pending.depthEnabled = on;
     return;
   } else if (name == "frameCompletionCallback") {
     // Never forwarded: renderFrame() calls it after compositing.
-    m_pending.completionCallback = type == ANARI_FRAME_COMPLETION_CALLBACK
+    const bool ok = type == ANARI_FRAME_COMPLETION_CALLBACK;
+    if (!ok) {
+      warnAtCommit(name,
+          type,
+          mem,
+          "ANARI_FRAME_COMPLETION_CALLBACK",
+          "treated as unset");
+    }
+    m_pending.completionCallback = ok
         ? bit_cast<ANARIFrameCompletionCallback>(type, mem)
         : TrackedParameters{}.completionCallback;
     return;
   } else if (name == "frameCompletionCallbackUserData") {
     // ANARI_VOID_POINTER parameters pass the pointer value itself as `mem`.
-    m_pending.completionCallbackUserData = type == ANARI_VOID_POINTER
-        ? mem
-        : TrackedParameters{}.completionCallbackUserData;
+    const bool ok = type == ANARI_VOID_POINTER;
+    if (!ok) {
+      warnAtCommit(name,
+          type,
+          mem,
+          "ANARI_VOID_POINTER",
+          "treated as unset (null)");
+    }
+    m_pending.completionCallbackUserData =
+        ok ? mem : TrackedParameters{}.completionCallbackUserData;
     return;
   } else if (name == "mpiCommunicator") {
     // Never forwarded: ptc implements KHR_DATA_PARALLEL_MPI. The value is a
     // pointer to the app's MPI_Comm, dereferenced at the next commit; a null
     // pointer or a wrong type reads as unset (MPI_COMM_WORLD).
     if (type != ANARI_VOID_POINTER) {
-      // warn: falling back to MPI_COMM_WORLD on some ranks only would hang
-      m_reportStatus(ANARI_SEVERITY_WARNING,
-          "'mpiCommunicator' must be ANARI_VOID_POINTER (a pointer to an "
-          "MPI_Comm); using MPI_COMM_WORLD");
+      // falling back to MPI_COMM_WORLD on some ranks only would hang
+      warnAtCommit(name,
+          type,
+          mem,
+          "ANARI_VOID_POINTER (a pointer to an MPI_Comm)",
+          "MPI_COMM_WORLD is used");
     }
     m_pendingComm =
         type == ANARI_VOID_POINTER ? (const MPI_Comm *)mem : nullptr;
@@ -161,16 +228,47 @@ void FrameWrapper::setParameter(
     return;
   } else if (const int i = idChannelIndex(name); i >= 0) {
     // forwarded below: the wrapped frame renders the ids ptc composites
-    m_pending.idEnabled[i] = type == ANARI_DATA_TYPE
-        && bit_cast<ANARIDataType>(type, mem) == ANARI_UINT32;
+    bool on = false;
+    if (!isChannelType(type, mem, ANARI_UINT32, on)) {
+      warnAtCommit(name,
+          type,
+          mem,
+          "ANARI_DATA_TYPE ANARI_UINT32",
+          "the channel is not composited");
+    }
+    m_pending.idEnabled[i] = on;
   }
 
   anariSetParameter(m_device, m_frame, _name, type, mem);
 }
 
+void FrameWrapper::warnAtCommit(std::string_view name,
+    ANARIDataType type,
+    const void *mem,
+    const char *expected,
+    const char *effect)
+{
+  m_pendingDiagnostics[std::string(name)] = {ANARI_SEVERITY_WARNING,
+      ANARI_STATUS_INVALID_ARGUMENT,
+      "frame parameter '" + std::string(name) + "' was set as "
+          + describeType(type, mem) + ", but must be " + expected + "; "
+          + effect};
+}
+
+void FrameWrapper::reportStatus(
+    ANARIStatusSeverity severity, const std::string &msg) const
+{
+  m_reportStatus(severity,
+      severity <= ANARI_SEVERITY_ERROR ? ANARI_STATUS_UNKNOWN_ERROR
+                                       : ANARI_STATUS_NO_ERROR,
+      msg.c_str());
+}
+
 void FrameWrapper::unsetParameter(const char *_name)
 {
   std::string_view name = _name;
+  if (auto d = m_pendingDiagnostics.find(name); d != m_pendingDiagnostics.end())
+    m_pendingDiagnostics.erase(d);
   if (name == "size")
     m_pending.size = TrackedParameters{}.size;
   else if (name == "channel.color")
@@ -197,6 +295,7 @@ void FrameWrapper::unsetParameter(const char *_name)
 void FrameWrapper::unsetAllParameters()
 {
   m_pending = {};
+  m_pendingDiagnostics.clear();
   m_pendingComm = nullptr;
   m_pendingCommChanged = true;
   anariUnsetAllParameters(m_device, m_frame);
@@ -251,6 +350,12 @@ void FrameWrapper::unmapParameterArray(const char *name)
 
 void FrameWrapper::commitParameters()
 {
+  refuseFromCallback("commit");
+  // what was set wrong since the last commit, reported once
+  for (const auto &[name, d] : m_pendingDiagnostics)
+    m_reportStatus(d.severity, d.code, d.message.c_str());
+  m_pendingDiagnostics.clear();
+
   m_committed = m_pending;
   anariCommitParameters(m_device, m_frame);
 
@@ -353,12 +458,17 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
 
   std::string_view channel = _channel;
 
-  if (channel == "channel.color") {
+  if (m_lastRenderFailed) {
+    // e.g. channel.color rejected at commit: say so, not that it is unset
+    reportStatus(ANARI_SEVERITY_WARNING,
+        "cannot map '" + std::string(channel)
+            + "': the frame's last render failed");
+  } else if (channel == "channel.color") {
     if (m_bufferColorType != ANARI_UNKNOWN && m_color) {
       *pixelType = m_bufferColorType;
       return m_color;
     }
-    m_reportStatus(ANARI_SEVERITY_WARNING,
+    reportStatus(ANARI_SEVERITY_WARNING,
         m_bufferColorType != ANARI_UNKNOWN
             ? "cannot map 'channel.color': the frame has not been rendered "
               "with a non-empty 'size'"
@@ -369,7 +479,7 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
       *pixelType = ANARI_FLOAT32;
       return m_depth;
     }
-    m_reportStatus(ANARI_SEVERITY_WARNING,
+    reportStatus(ANARI_SEVERITY_WARNING,
         m_renderedDepthEnabled
             ? "cannot map 'channel.depth': the frame has not been rendered "
               "with a non-empty 'size'"
@@ -385,14 +495,14 @@ const void *FrameWrapper::frameBufferMap(const char *_channel,
                 ? "the frame has not been rendered with a non-empty 'size'"
                 : "the frame was rendered without its '" + std::string(channel)
                     + "' parameter set to ANARI_UINT32");
-    m_reportStatus(ANARI_SEVERITY_WARNING, msg.c_str());
+    reportStatus(ANARI_SEVERITY_WARNING, msg);
   } else {
     // e.g. channel.normal and channel.albedo: they can't be blended, and
     // ptc doesn't composite them
     const std::string msg = "cannot map '" + std::string(channel)
         + "': ptc composites only channel.color, channel.depth, "
           "channel.primitiveId, channel.objectId and channel.instanceId";
-    m_reportStatus(ANARI_SEVERITY_WARNING, msg.c_str());
+    reportStatus(ANARI_SEVERITY_WARNING, msg);
   }
 
   *width = 0;
@@ -426,11 +536,13 @@ void FrameWrapper::updateBuffers()
   freeBuffers();
   m_reallocate = false;
   if (!isCompositableColorType(colorType)) {
-    // renderFrame() has every rank skip compositing if any rank throws
-    throw std::runtime_error(std::string("cannot composite 'channel.color' "
+    // rejected at commit already; renderFrame() has every rank skip
+    // compositing if any rank throws
+    throw std::runtime_error(std::string("cannot render: 'channel.color' "
                                          "of type ")
         + anari::toString(colorType)
-        + ": supported are UFIXED8_VEC4, UFIXED8_RGBA_SRGB and FLOAT32_VEC4");
+        + " was rejected at commit (supported are UFIXED8_VEC4, "
+          "UFIXED8_RGBA_SRGB and FLOAT32_VEC4)");
   }
   if (m_comm == MPI_COMM_NULL && size.x != 0 && size.y != 0) {
     throw std::runtime_error("cannot composite: the frame has no valid "
@@ -471,6 +583,10 @@ void FrameWrapper::freeBuffers()
 
 void FrameWrapper::renderFrame()
 {
+  refuseFromCallback("render");
+  // until this render succeeds
+  m_lastRenderFailed = true;
+
   // Every rank sees the same commits, so all of them skip or composite.
   const auto size = m_committed.size;
   const bool compositing =
@@ -530,12 +646,28 @@ void FrameWrapper::renderFrame()
                                "composited it");
     }
   }
+  m_lastRenderFailed = false;
+}
+
+void FrameWrapper::completeFrame()
+{
   // The composited frame is ready (rendering is synchronous), so the
   // continuation has run before any anariFrameReady() returns.
-  if (auto callback = m_committed.completionCallback) {
-    callback(m_committed.completionCallbackUserData,
-        m_ptcDevice,
-        (ANARIFrame)this);
+  auto callback = m_committed.completionCallback;
+  if (!callback)
+    return;
+  m_inCompletionCallback = true;
+  callback(
+      m_committed.completionCallbackUserData, m_ptcDevice, (ANARIFrame)this);
+  m_inCompletionCallback = false;
+}
+
+void FrameWrapper::refuseFromCallback(const char *what) const
+{
+  if (m_inCompletionCallback) {
+    throw StatusError(ANARI_STATUS_INVALID_OPERATION,
+        std::string("cannot ") + what
+            + " a frame from inside its own frame completion callback");
   }
 }
 
@@ -596,7 +728,7 @@ void FrameWrapper::stageIds(const float *depth)
     if (!valid) {
       const std::string msg = std::string("the wrapped frame did not render '")
           + name + "' as ANARI_UINT32; compositing it as no hits";
-      m_reportStatus(ANARI_SEVERITY_WARNING, msg.c_str());
+      reportStatus(ANARI_SEVERITY_WARNING, msg);
     }
     for (size_t p = 0; p < numPixels; p++)
       records[p * words + RECORD_FIRST_ID + c] = valid ? ids[p] : ~0u;

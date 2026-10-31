@@ -112,9 +112,9 @@ ANARIFrame PTCDevice::newFrame()
         (ANARIDevice)&w,
         w.newFrame(),
         [=](const void *f) { this->removeFrameWrapper((FrameWrapper *)f); },
-        [=](ANARIStatusSeverity severity, const char *msg) {
-          this->reportMessage(severity, "%s", msg);
-        });
+        [=](ANARIStatusSeverity severity,
+            ANARIStatusCode code,
+            const char *msg) { this->reportStatus(severity, code, msg); });
     m_frameWrappers.push_back(fw);
     return (ANARIFrame)fw;
   });
@@ -456,7 +456,16 @@ void PTCDevice::frameBufferUnmap(ANARIFrame f, const char *channel)
 void PTCDevice::renderFrame(ANARIFrame f)
 {
   guarded("anariRenderFrame", [&] {
-    checkedFrameWrapper(f)->renderFrame();
+    auto *fw = checkedFrameWrapper(f);
+    // refused without calling the callback, which would recurse
+    fw->refuseFromCallback("render");
+    try {
+      fw->renderFrame();
+    } catch (...) {
+      // the app learns why the render failed before its callback runs
+      reportException("anariRenderFrame");
+    }
+    fw->completeFrame();
   });
 }
 
@@ -481,6 +490,10 @@ void PTCDevice::reportException(const char *entryPoint) const noexcept
   try {
     try {
       throw;
+    } catch (const StatusError &e) {
+      reportStatus(ANARI_SEVERITY_ERROR,
+          e.code,
+          (std::string(entryPoint) + ": " + e.what()).c_str());
     } catch (const std::exception &e) {
       reportMessage(ANARI_SEVERITY_ERROR, "%s: %s", entryPoint, e.what());
     } catch (...) {

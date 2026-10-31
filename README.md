@@ -44,7 +44,9 @@ or
 Configure with `-DPTC_BUILD_TESTING=ON`, build, then run `ctest` in the
 build directory. This runs an MPI smoke test (`tests/ptcSmoke.cpp`) on 1, 2
 and 3 ranks with `helide` as the wrapped device. The tests are skipped (with
-a configure-time warning) if `mpiexec` or `helide` cannot be found.
+a configure-time warning) if `mpiexec` or `helide` cannot be found. With
+Open MPI's `mpiexec`, the multi-rank tests pass `--oversubscribe`, so they
+also run on machines with fewer cores than ranks.
 
 # Installing
 
@@ -146,6 +148,27 @@ free its communicator after the commit.
   current only around its own CUDA work and then restores the calling
   thread's current CUDA context, so the app and the wrapped device never
   see it change.
+
+## Diagnostics
+
+ptc prints nothing: everything it has to say goes through the ANARI status
+callback. (The vendored CUDA compositor has opt-in debug output on stdout,
+built with `-DDC_VERBOSE=1`.)
+
+- A frame parameter ptc tracks (`size`, `channel.color`, `channel.depth`,
+  the id channels, `mpiCommunicator`, `frameCompletionCallback` and its
+  user data) set with the wrong type is ignored, as in helide, and the next
+  commit warns about it once.
+- A `channel.color` type ptc cannot composite (anything but `UFIXED8_VEC4`,
+  `UFIXED8_RGBA_SRGB` and `FLOAT32_VEC4`) is rejected at commit with an
+  ERROR and `ANARI_STATUS_INVALID_ARGUMENT`. The frame then fails to render,
+  on every rank of its communicator, until a supported type is set or
+  `channel.color` is unset.
+- After a failed render, mapping any channel is refused with a warning that
+  says so. The frame completion callback still runs, after the render's
+  ERROR was reported.
+- Rendering or committing a frame from inside its own frame completion
+  callback is refused with an ERROR.
 
 ## MPI initialization and device lifetime
 

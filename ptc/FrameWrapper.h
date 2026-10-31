@@ -28,22 +28,13 @@
 #include <functional>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace ptc {
-
-#ifndef PRINT
-# define PRINT(var) std::cout << #var << "=" << var << std::endl;
-#ifdef __WIN32__
-# define PING std::cout << __FILE__ << "::" << __LINE__ << ": " << __FUNCTION__ << std::endl;
-#else
-# define PING std::cout << __FILE__ << "::" << __LINE__ << ": " << __PRETTY_FUNCTION__ << std::endl;
-#endif
-#endif
-
-
 
   /*! Frame channels ptc composites by taking the value of each pixel's
       nearest fragment (equal depth: the lower rank's), since ids don't
@@ -55,8 +46,18 @@ namespace ptc {
       sizeof(ID_CHANNELS) / sizeof(ID_CHANNELS[0]);
 
   using FrameWrapperNotificationHandler = std::function<void(const void *)>;
-  using FrameWrapperStatusHandler =
-      std::function<void(ANARIStatusSeverity, const char *)>;
+  using FrameWrapperStatusHandler = std::function<void(
+      ANARIStatusSeverity, ANARIStatusCode, const char *)>;
+
+  /*! an error PTCDevice reports with this status code, instead of
+      ANARI_STATUS_UNKNOWN_ERROR */
+  struct StatusError : public std::runtime_error
+  {
+    StatusError(ANARIStatusCode code, const std::string &what)
+        : std::runtime_error(what), code(code)
+    {}
+    ANARIStatusCode code;
+  };
 
   struct FrameWrapper : public helium::RefCounted
   {
@@ -104,10 +105,19 @@ namespace ptc {
                                uint32_t *height,
                                ANARIDataType *pixelType);
     void frameBufferUnmap(const char *channel);
+    /*! renders and composites; the frame completion callback is left to
+        completeFrame(), which runs even if this throws */
     void renderFrame();
     int frameReady(ANARIWaitMask);
     void discardFrame();
     /////////////////////////////////////////////////////////////////////////////
+
+    /*! calls the app's frame completion callback, if set; after every
+        render, failed or not, once that render's error is reported */
+    void completeFrame();
+    /*! throws if called from inside this frame's completion callback;
+        'what' is the refused operation, e.g. "render" */
+    void refuseFromCallback(const char *what) const;
 
   protected:
     // The frame parameters ptc tracks, with the defaults the wrapped frame
@@ -176,8 +186,36 @@ namespace ptc {
         tears down the current compositor. */
     void setCommunicator(MPI_Comm comm);
 
+    /*! reports through the status callback, with ANARI_STATUS_NO_ERROR
+        below ERROR and ANARI_STATUS_UNKNOWN_ERROR from ERROR up */
+    void reportStatus(ANARIStatusSeverity severity, const std::string &msg) const;
+    /*! makes the next commit warn that parameter 'name' was set as 'type'
+        ('mem': its value), not as 'expected', and is ignored ('effect') */
+    void warnAtCommit(std::string_view name,
+                      ANARIDataType type,
+                      const void *mem,
+                      const char *expected,
+                      const char *effect);
+
     FrameWrapperNotificationHandler m_onObjectDestroy;
     FrameWrapperStatusHandler m_reportStatus;
+
+    // What the next commit reports about parameters set since the last one
+    // (e.g. a wrong type), by parameter name: setting or unsetting the
+    // parameter again replaces or drops it.
+    struct Diagnostic
+    {
+      ANARIStatusSeverity severity;
+      ANARIStatusCode code;
+      std::string message;
+    };
+    std::map<std::string, Diagnostic, std::less<>> m_pendingDiagnostics;
+
+    // whether the last render failed: nothing may be mapped until one
+    // succeeds
+    bool m_lastRenderFailed{false};
+    // whether completeFrame() is calling the app's callback right now
+    bool m_inCompletionCallback{false};
 
     // 'mpiCommunicator' (KHR_DATA_PARALLEL_MPI). The app passes a pointer to
     // an MPI_Comm as the ANARI_VOID_POINTER value, which works whether

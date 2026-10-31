@@ -17,16 +17,22 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <stdexcept>
+#include <string>
+
+// These throw instead of printing: the library reports errors through its
+// caller (ptc turns exceptions into status callback messages).
+
+#define DC_CUDA_ERROR(where, what, rc)                                  \
+  std::runtime_error(std::string(where) + "CUDA call (" + (what)        \
+      + ") failed with code " + std::to_string(int(rc)) + " (" __FILE__ \
+      ":" + std::to_string(__LINE__) + "): " + cudaGetErrorString(rc))
 
 #define CUDA_CHECK( call )                                              \
   {                                                                     \
     cudaError_t rc = call;                                              \
-    if (rc != cudaSuccess) {                                            \
-      fprintf(stderr,                                                   \
-              "CUDA call (%s) failed with code %d (line %d): %s\n",     \
-              #call, rc, __LINE__, cudaGetErrorString(rc));             \
-      throw std::runtime_error("fatal cuda error");                     \
-    }                                                                   \
+    if (rc != cudaSuccess)                                              \
+      throw DC_CUDA_ERROR("", #call, rc);                               \
   }
 
 #define CUDA_CALL(call) CUDA_CHECK(cuda##call)
@@ -34,58 +40,15 @@
 #define CUDA_CHECK2( where, call )                                      \
   {                                                                     \
     cudaError_t rc = call;                                              \
-    if(rc != cudaSuccess) {                                             \
-      if (where)                                                        \
-        fprintf(stderr, "at %s: CUDA call (%s) "                        \
-                "failed with code %d (line %d): %s\n",                  \
-                where,#call, rc, __LINE__, cudaGetErrorString(rc));     \
-      fprintf(stderr,                                                   \
-              "CUDA call (%s) failed with code %d (line %d): %s\n",     \
-              #call, rc, __LINE__, cudaGetErrorString(rc));             \
-      throw std::runtime_error("fatal cuda error");                     \
-    }                                                                   \
+    if (rc != cudaSuccess)                                              \
+      throw DC_CUDA_ERROR(std::string(where ? where : "") + ": ",       \
+                          #call, rc);                                   \
   }
 
-#define CUDA_SYNC_CHECK()                                       \
-  {                                                             \
-    cudaDeviceSynchronize();                                    \
-    cudaError_t rc = cudaGetLastError();                        \
-    if (rc != cudaSuccess) {                                    \
-      fprintf(stderr, "error (%s: line %d): %s\n",              \
-              __FILE__, __LINE__, cudaGetErrorString(rc));      \
-      throw std::runtime_error("fatal cuda error");             \
-    }                                                           \
-  }
-
-
-
-#define CUDA_CHECK_NOTHROW( call )                                      \
+#define CUDA_SYNC_CHECK()                                               \
   {                                                                     \
-    cudaError_t rc = call;                                              \
-    if (rc != cudaSuccess) {                                            \
-      fprintf(stderr,                                                   \
-              "CUDA call (%s) failed with code %d (line %d): %s\n",     \
-              #call, rc, __LINE__, cudaGetErrorString(rc));             \
-      exit(2);                                                          \
-    }                                                                   \
+    cudaDeviceSynchronize();                                            \
+    cudaError_t rc = cudaGetLastError();                                \
+    if (rc != cudaSuccess)                                              \
+      throw DC_CUDA_ERROR("", "cudaDeviceSynchronize", rc);             \
   }
-
-#define CUDA_CALL_NOTHROW(call) CUDA_CHECK_NOTHROW(cuda##call)
-
-#define CUDA_CHECK2_NOTHROW( where, call )                              \
-  {                                                                     \
-    cudaError_t rc = call;                                              \
-    if(rc != cudaSuccess) {                                             \
-      if (where)                                                        \
-        fprintf(stderr, "at %s: CUDA call (%s) "                        \
-                "failed with code %d (line %d): %s\n",                  \
-                where,#call, rc, __LINE__, cudaGetErrorString(rc));     \
-      fprintf(stderr,                                                   \
-              "CUDA call (%s) failed with code %d (line %d): %s\n",     \
-              #call, rc, __LINE__, cudaGetErrorString(rc));             \
-      throw std::runtime_error("fatal cuda error");                     \
-    }                                                                   \
-  }
-
-
-

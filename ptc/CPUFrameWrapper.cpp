@@ -17,6 +17,7 @@
 #include "CPUFrameWrapper.h"
 // std
 #include <cstring>
+#include <string>
 #include <string_view>
 // anari
 #include <anari/frontend/type_utility.h>
@@ -79,6 +80,12 @@ namespace ptc {
   void CPUFrameWrapper::createCompositor(MPI_Comm comm)
   {
     compositor = std::make_unique<CPUCompositor>(comm);
+    int rank = 0, size = 0;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    reportStatus(ANARI_SEVERITY_DEBUG,
+        "CPU compositor on rank " + std::to_string(rank) + " of "
+            + std::to_string(size));
   }
 
   void CPUFrameWrapper::destroyCompositor()

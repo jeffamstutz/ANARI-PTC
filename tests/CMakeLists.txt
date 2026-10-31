@@ -50,11 +50,36 @@ endif()
 set(PTC_TEST_RANKS 1 2 3)
 set(PTC_TEST_COLORS ufixed8 float32)
 
+# Open MPI refuses to start more ranks than the host has slots (cores) unless
+# told to oversubscribe, so the 3- and 4-rank tests would fail on small CI
+# runners. MPICH and others oversubscribe without being asked.
+execute_process(COMMAND ${MPIEXEC_EXECUTABLE} --version
+  OUTPUT_VARIABLE PTC_MPIEXEC_VERSION
+  ERROR_VARIABLE PTC_MPIEXEC_VERSION
+  RESULT_VARIABLE PTC_MPIEXEC_VERSION_RESULT)
+set(PTC_MPIEXEC_OVERSUBSCRIBE "")
+if (PTC_MPIEXEC_VERSION MATCHES "Open MPI|OpenRTE|open-mpi")
+  set(PTC_MPIEXEC_OVERSUBSCRIBE --oversubscribe)
+  message("#ptc: mpiexec is Open MPI, multi-rank tests pass --oversubscribe")
+endif()
+
+# The mpiexec command line that starts <ranks> ranks of what follows it.
+function(ptc_mpiexec out ranks)
+  set(flags "")
+  if (ranks GREATER 1)
+    set(flags ${PTC_MPIEXEC_OVERSUBSCRIBE})
+  endif()
+  set(${out}
+    ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${flags}
+    ${MPIEXEC_PREFLAGS}
+    PARENT_SCOPE)
+endfunction()
+
 # Run ptcSmoke on <ranks> ranks with the given extra arguments.
 function(ptc_smoke_command out ranks)
+  ptc_mpiexec(mpiexec ${ranks})
   set(${out}
-    ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks} ${MPIEXEC_PREFLAGS}
-    $<TARGET_FILE:ptcSmoke> ${MPIEXEC_POSTFLAGS}
+    ${mpiexec} $<TARGET_FILE:ptcSmoke> ${MPIEXEC_POSTFLAGS}
     --expect-library $<TARGET_FILE:anari_library_ptc> ${ARGN}
     PARENT_SCOPE)
 endfunction()
@@ -155,8 +180,9 @@ ptc_add_smoke_tests(nocolor_ids --color none --ids)
 ptc_add_smoke_tests(ids_resize --color float32 --resize --ids)
 ptc_add_smoke_tests(ids_unset_all --color ufixed8 --unset-all --ids)
 
-# A color type ptc cannot composite: rendering reports an ERROR through the
-# status callback on every rank (no exception escapes anariRenderFrame) and
+# A color type ptc cannot composite: committing it reports an ERROR with
+# ANARI_STATUS_INVALID_ARGUMENT, rendering then reports an ERROR through the
+# status callback on every rank (no exception escapes anariRenderFrame), and
 # there is nothing to map.
 ptc_add_smoke_tests(unsupported_color --color float32-vec3)
 # The same on the last rank only (ticket 11): the ranks agree that the render
@@ -166,12 +192,24 @@ ptc_add_smoke_tests(fail_last_rank --color ufixed8 --fail-last-rank
   RANKS 2 3)
 ptc_add_smoke_tests(fail_last_rank_ids --color ufixed8 --ids --depth
   --fail-last-rank RANKS 2 3)
+# The frame completion callback still runs after a failed render, once the
+# ERROR has been reported (ticket 14).
+ptc_add_smoke_tests(unsupported_color_callback --color float32-vec3 --callback
+  RANKS 1 2)
+ptc_add_smoke_tests(fail_last_rank_callback --color ufixed8 --fail-last-rank
+  --callback RANKS 2 3)
+
+# Parameters ptc tracks, set with the wrong type, warn at commit (ticket 14).
+ptc_add_smoke_tests(wrong_types --color ufixed8 --wrong-types RANKS 1 2)
 
 # Frame completion callback (ticket 06): called once per render with the ptc
 # handles, after compositing; not called once unset.
 ptc_add_smoke_tests(callback --color ufixed8 --callback)
 ptc_add_smoke_tests(callback_resize --color ufixed8 --resize --depth --callback)
 ptc_add_smoke_tests(callback_unset_all --color ufixed8 --unset-all --callback)
+# Rendering or committing the frame from inside its callback is refused.
+ptc_add_smoke_tests(callback_reenter --color ufixed8 --callback --reenter
+  RANKS 1 2)
 
 # mpiCommunicator (ticket 07): MPI_COMM_WORLD split into two halves, each
 # compositing its own image to its own rank 0. Also switching communicators
@@ -247,9 +285,9 @@ foreach(scenario missing fallback)
   endif()
   foreach(ranks 1 2)
     set(test ptc_wrapped_${scenario}_${ranks}ranks)
+    ptc_mpiexec(mpiexec ${ranks})
     add_test(NAME ${test} COMMAND
-      ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
-      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ptcWrapped> ${MPIEXEC_POSTFLAGS}
+      ${mpiexec} $<TARGET_FILE:ptcWrapped> ${MPIEXEC_POSTFLAGS}
       --expect-library $<TARGET_FILE:anari_library_ptc>
       --scenario ${scenario})
     ptc_set_test_environment(${test} ${ranks} ${envLibrary})
@@ -271,9 +309,9 @@ foreach(scenario two-devices single query-release)
     endif()
     foreach(ranks 1 2)
       set(test ptc_lifetime_${scenario}_${mpi}_mpi_${ranks}ranks)
+      ptc_mpiexec(mpiexec ${ranks})
       add_test(NAME ${test} COMMAND
-        ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
-        ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ptcLifetime> ${MPIEXEC_POSTFLAGS}
+        ${mpiexec} $<TARGET_FILE:ptcLifetime> ${MPIEXEC_POSTFLAGS}
         --expect-library $<TARGET_FILE:anari_library_ptc>
         --scenario ${scenario} ${extra})
       ptc_set_test_environment(${test} ${ranks})
@@ -290,4 +328,16 @@ string(REPLACE ";" "$<SEMICOLON>" cmd "${cmd}")
 add_test(NAME ${test}
   COMMAND ${CMAKE_COMMAND} -DRANKS=${ranks} -DCOMMAND=${cmd}
           -P ${CMAKE_CURRENT_SOURCE_DIR}/ExpectFailure.cmake)
+ptc_set_test_environment(${test} ${ranks})
+
+# Quiet device (ticket 14): a normal 2-rank run with every channel and the
+# callback prints nothing to stdout but the harness's own lines; everything
+# the device has to say goes through the status callback.
+set(ranks 2)
+set(test ptc_smoke_quiet_${ranks}ranks)
+ptc_smoke_command(cmd ${ranks} --color ufixed8 --depth --ids --callback)
+string(REPLACE ";" "$<SEMICOLON>" cmd "${cmd}")
+add_test(NAME ${test}
+  COMMAND ${CMAKE_COMMAND} -DCOMMAND=${cmd}
+          -P ${CMAKE_CURRENT_SOURCE_DIR}/ExpectQuiet.cmake)
 ptc_set_test_environment(${test} ${ranks})

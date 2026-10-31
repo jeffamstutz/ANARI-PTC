@@ -23,20 +23,10 @@
 #include <vector>
 #include <map>
 #include <anari/anari_cpp/ext/linalg.h>
-#include <iostream>
 #include <tbb/global_control.h>
 
 namespace ptc {
   using namespace anari;
-  
-#ifndef PRINT
-# define PRINT(var) std::cout << #var << "=" << var << std::endl;
-#ifdef __WIN32__
-# define PING std::cout << __FILE__ << "::" << __LINE__ << ": " << __FUNCTION__ << std::endl;
-#else
-# define PING std::cout << __FILE__ << "::" << __LINE__ << ": " << __PRETTY_FUNCTION__ << std::endl;
-#endif
-#endif
 
   struct CPUCompositor
   {

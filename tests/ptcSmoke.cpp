@@ -18,8 +18,8 @@
 // Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|float32-vec3|none]
 //                 [--depth] [--ids]
 //                 [--resize] [--first-color <type>] [--unset-all]
-//                 [--uncommitted] [--callback] [--invert-check]
-//                 [--fail-last-rank]
+//                 [--uncommitted] [--callback] [--reenter]
+//                 [--invert-check] [--fail-last-rank] [--wrong-types]
 //                 [--comm <comm>] [--first-comm <comm>]
 //                 [--background none|blend|opaque]
 //                 [--expect-library <path>]
@@ -28,9 +28,11 @@
 //   --color           frame color channel type (default ufixed8); 'none'
 //                     leaves channel.color unset and checks that mapping
 //                     color is refused; 'float32-vec3' is a type ptc cannot
-//                     composite, so rendering must report an ERROR through
-//                     the status callback on every rank (not throw) and
-//                     mapping color must be refused
+//                     composite, so committing it must report an ERROR with
+//                     ANARI_STATUS_INVALID_ARGUMENT, rendering must report an
+//                     ERROR through the status callback on every rank (not
+//                     throw), and mapping color must be refused because the
+//                     render failed
 //   --depth           enable channel.depth and check the composited depth;
 //                     without it, check that mapping depth is refused
 //   --ids             enable channel.primitiveId, channel.objectId and
@@ -53,7 +55,16 @@
 //                     and frame handles and the app's user data, after
 //                     compositing (rank 0 checks the composited color from
 //                     inside the callback). Afterwards the callback is unset
-//                     and one more render must not call it.
+//                     and one more render must not call it. Before that,
+//                     only the user data is unset, and one more render must
+//                     call the callback with null user data. When the render
+//                     fails (--fail-last-rank, an uncompositable --color),
+//                     the callback must still be called, after the ERROR
+//                     was reported.
+//   --reenter         with --callback: from inside the first callback,
+//                     anariRenderFrame and anariCommitParameters on the
+//                     frame must each be refused with an ERROR (and not call
+//                     the callback again)
 //   --invert-check    expect the wrong colors, so the pixel check must fail;
 //                     used to test the harness's failure path
 //   --fail-last-rank  the last rank commits 'float32-vec3' color (which ptc
@@ -62,6 +73,10 @@
 //                     rank must report an ERROR through the status callback
 //                     and return (none may hang in the compositor), and the
 //                     color map is refused
+//   --wrong-types     first, on a separate frame, set each parameter ptc
+//                     tracks with the wrong type: none may warn when set,
+//                     each must warn once, by name, at the next commit, and
+//                     a second commit must not warn again
 //   --comm            communicator the frame composites over (default
 //                     world): 'world' leaves mpiCommunicator unset (so
 //                     MPI_COMM_WORLD); 'split' splits MPI_COMM_WORLD into
@@ -126,6 +141,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace anari::math;
@@ -181,8 +197,10 @@ struct Options
   bool unsetAll{false};
   bool uncommitted{false};
   bool callback{false};
+  bool reenter{false};
   bool invertCheck{false};
   bool failLastRank{false};
+  bool wrongTypes{false};
   CommSplit comm{CommSplit::World};
   std::optional<CommSplit> firstComm;
   Background background{Background::None};
@@ -228,26 +246,34 @@ int g_colorErrors = 0;
 int g_errors = 0;
 // Status messages at WARNING or worse
 int g_warnings = 0;
+// Status messages at ERROR or worse with ANARI_STATUS_INVALID_ARGUMENT that
+// mention channel.color
+int g_colorInvalidArguments = 0;
 // The last status message at WARNING or worse
 std::string g_lastWarning;
+// Every status message at WARNING or worse, in order
+std::vector<std::string> g_warningLog;
 
 void statusFunc(const void *,
     ANARIDevice,
     ANARIObject,
     ANARIDataType,
     ANARIStatusSeverity sev,
-    ANARIStatusCode,
+    ANARIStatusCode code,
     const char *msg)
 {
+  const bool color = std::string(msg).find("channel.color") != std::string::npos;
   if (sev <= ANARI_SEVERITY_WARNING) {
     fprintf(stderr, "[anari] %s\n", msg);
     g_depthWarnings += std::string(msg).find("channel.depth") != std::string::npos;
-    g_colorWarnings += std::string(msg).find("channel.color") != std::string::npos;
+    g_colorWarnings += color;
     g_lastWarning = msg;
+    g_warningLog.push_back(msg);
     g_warnings++;
   }
   if (sev <= ANARI_SEVERITY_ERROR) {
-    g_colorErrors += std::string(msg).find("channel.color") != std::string::npos;
+    g_colorErrors += color;
+    g_colorInvalidArguments += color && code == ANARI_STATUS_INVALID_ARGUMENT;
     g_errors++;
   }
 }
@@ -340,6 +366,10 @@ bool parseArgs(int argc, char **argv, Options &opts)
       opts.uncommitted = true;
     else if (arg == "--callback")
       opts.callback = true;
+    else if (arg == "--reenter")
+      opts.reenter = true;
+    else if (arg == "--wrong-types")
+      opts.wrongTypes = true;
     else if (arg == "--invert-check")
       opts.invertCheck = true;
     else if (arg == "--fail-last-rank")
@@ -697,6 +727,16 @@ struct CallbackContext
   // the committed frame state of the render in flight, for rank 0's check
   const FrameState *rendering{nullptr};
   bool finalFrame{false};
+  // the final render fails; its ERROR must come before the callback
+  bool renderFails{false};
+  int errorsBeforeRender{0};
+  // the callback may get null user data (only the user data is unset)
+  bool expectNullUserData{false};
+  int nullUserDataCalls{0};
+  // callbacks in progress (more than one: ptc re-entered it)
+  int depth{0};
+  // --reenter: re-entrant calls were tried, from the first callback
+  bool reentered{false};
   int calls{0};
   int failures{0};
 };
@@ -842,23 +882,28 @@ void changeParameters(anari::Device d,
   commitFrame(d, frame);
 }
 
-// Rank 0 only: the frame has no channel.color, so mapping color returns
-// nothing and reports why through the status callback.
-int checkColorRefused(anari::Device d, anari::Frame frame, const char *which)
+// Rank 0 only: the frame has no channel.color, or its last render failed
+// ('failed'), so mapping color returns nothing and reports why through the
+// status callback; after a failure, the warning must say so.
+int checkColorRefused(
+    anari::Device d, anari::Frame frame, const char *which, bool failed = false)
 {
   const int warningsBefore = g_colorWarnings;
   auto fb = anari::map<void>(d, frame, "channel.color");
+  const bool warned = g_colorWarnings > warningsBefore
+      && (!failed || g_lastWarning.find("failed") != std::string::npos);
   const bool ok = !fb.data && fb.width == 0 && fb.height == 0
-      && fb.pixelType == ANARI_UNKNOWN && g_colorWarnings > warningsBefore;
-  printf("%s: %s: unset color map refused (data=%p %ux%u type=%d, "
+      && fb.pixelType == ANARI_UNKNOWN && warned;
+  printf("%s: %s: %s color map refused (data=%p %ux%u type=%d, "
          "warning %s)\n",
       ok ? "PASS" : "FAIL",
       which,
+      failed ? "failed" : "unset",
       fb.data,
       fb.width,
       fb.height,
       int(fb.pixelType),
-      g_colorWarnings > warningsBefore ? "reported" : "missing");
+      warned ? "reported" : "missing or wrong");
   anari::unmap(d, frame, "channel.color");
   return !ok;
 }
@@ -892,7 +937,9 @@ int checkColor(
     anari::Device d, anari::Frame frame, const Options &opts, const Layout &l)
 {
   const int size = l.size;
-  if (opts.colorType == ANARI_UNKNOWN || !compositable(opts.colorType))
+  if (!compositable(opts.colorType))
+    return checkColorRefused(d, frame, "final frame", true);
+  if (opts.colorType == ANARI_UNKNOWN)
     return checkColorRefused(d, frame, "final frame");
   int failures = 0;
   auto fb = anari::map<void>(d, frame, "channel.color");
@@ -1190,8 +1237,36 @@ void touchNonRootMaps(anari::Device d, anari::Frame frame)
 // Called by ptc once the composited frame is ready. The handles must be the
 // ones the app holds (not the wrapped device's), and on rank 0 the composited
 // color must already be there: mapping it is legal inside the callback.
+// --reenter, from inside the callback: rendering or committing the frame is
+// refused with an ERROR, and does not call the callback again.
+int checkReentryRefused(ANARIDevice d, ANARIFrame f, int rank)
+{
+  Checker c{rank};
+  int before = g_errors;
+  anariRenderFrame(d, f);
+  c.expect(g_errors == before + 1,
+      "anariRenderFrame from inside the frame completion callback was not "
+      "refused with one ERROR");
+  before = g_errors;
+  anariCommitParameters(d, f);
+  c.expect(g_errors == before + 1,
+      "anariCommitParameters from inside the frame completion callback was "
+      "not refused with one ERROR");
+  if (!c.failures) {
+    printf("PASS: rank %d: render and commit from inside the callback "
+           "refused\n",
+        rank);
+  }
+  return c.failures;
+}
+
 void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
 {
+  if (!userData && g_callback.expectNullUserData) {
+    g_callback.calls++;
+    g_callback.nullUserDataCalls++;
+    return;
+  }
   if (userData != &g_callback) {
     printf("FAIL: frame completion callback got the wrong user data\n");
     g_callback.calls++;
@@ -1201,8 +1276,19 @@ void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
   // from here on, everything is reached through the app's user data
   auto &ctx = *(CallbackContext *)userData;
   ctx.calls++;
-  checkCudaDevice("inside the frame completion callback");
   Checker c{ctx.rank};
+  if (ctx.depth > 0) {
+    c.expect(false, "frame completion callback called from inside itself");
+    ctx.failures += c.failures;
+    return;
+  }
+  ctx.depth++;
+  checkCudaDevice("inside the frame completion callback");
+  if (ctx.finalFrame && ctx.rendering && ctx.renderFails) {
+    c.expect(g_errors > ctx.errorsBeforeRender,
+        "frame completion callback called before the render's ERROR was "
+        "reported");
+  }
   c.expect(d == ctx.device,
       "frame completion callback got a device handle that is not the ptc "
       "device");
@@ -1212,10 +1298,19 @@ void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
   if (d == ctx.device && f == ctx.frame && ctx.rendering
       && ctx.rendering->layout->rank == 0) {
     printf("callback %d: checking composited color\n", ctx.calls);
-    c.failures += ctx.finalFrame
-        ? checkColor(ctx.device, ctx.frame, *ctx.opts, *ctx.layout)
-        : checkFirstFrame(ctx.device, ctx.frame, *ctx.rendering);
+    if (!ctx.finalFrame)
+      c.failures += checkFirstFrame(ctx.device, ctx.frame, *ctx.rendering);
+    else if (ctx.renderFails)
+      c.failures += checkColorRefused(
+          ctx.device, ctx.frame, "inside the callback", true);
+    else
+      c.failures += checkColor(ctx.device, ctx.frame, *ctx.opts, *ctx.layout);
   }
+  if (ctx.opts->reenter && !ctx.reentered) {
+    ctx.reentered = true;
+    c.failures += checkReentryRefused(d, f, ctx.rank);
+  }
+  ctx.depth--;
   ctx.failures += c.failures;
 }
 
@@ -1227,24 +1322,100 @@ int checkCallbackCalls(anari::Device d, anari::Frame frame, int rank, int render
   c.expect(g_callback.calls == renders,
       "frame completion callback called " + std::to_string(g_callback.calls)
           + " times for " + std::to_string(renders) + " renders");
-
+  c.expect(!g_callback.opts->reenter || g_callback.reentered,
+      "no re-entrant render or commit was tried from the callback");
   g_callback.rendering = nullptr;
+
+  // only the user data unset: the callback still runs, with null user data
+  g_callback.expectNullUserData = true;
+  anari::unsetParameter(d, frame, "frameCompletionCallbackUserData");
+  commitFrame(d, frame);
+  int before = g_callback.calls;
+  renderAndWait(d, frame);
+  c.expect(g_callback.calls == before + 1 && g_callback.nullUserDataCalls == 1,
+      "frame completion callback not called once with null user data after "
+      "unsetting only frameCompletionCallbackUserData");
+  const int nullCalls = g_callback.calls - before;
+
   anari::unsetParameter(d, frame, "frameCompletionCallback");
   commitFrame(d, frame);
-  const int before = g_callback.calls;
+  before = g_callback.calls;
   renderAndWait(d, frame);
   c.expect(g_callback.calls == before,
       "frame completion callback called after it was unset");
 
   if (rank == 0) {
     printf("%s: frame completion callback called %d times for %d renders, "
-           "then %d times after unset\n",
+           "%d times with null user data, then %d times after unset\n",
         c.failures ? "FAIL" : "PASS",
-        before,
         renders,
+        renders,
+        nullCalls,
         g_callback.calls - before);
   }
   return c.failures + g_callback.failures;
+}
+
+// --wrong-types, every rank: on a frame of its own, each parameter ptc
+// tracks, set with the wrong type, is not warned about when set, but once,
+// by name, at the next commit, and not again at the commit after that.
+int checkWrongTypes(anari::Device d, int rank)
+{
+  Checker c{rank};
+  auto frame = anari::newObject<anari::Frame>(d);
+
+  const float2 size(64.f, 64.f);
+  const int32_t notAType = ANARI_UFIXED8_RGBA_SRGB;
+  const int32_t notAComm = 0;
+  const ANARIDataType float64 = ANARI_FLOAT64;
+  const ANARIDataType float32 = ANARI_FLOAT32;
+  const std::pair<const char *, std::string> wrong[] = {
+      {"size", "ANARI_FLOAT32_VEC2"},
+      {"channel.color", "ANARI_INT32"},
+      {"channel.depth", "ANARI_FLOAT64"},
+      {"channel.primitiveId", "ANARI_FLOAT32"},
+      {"mpiCommunicator", "ANARI_INT32"},
+      {"frameCompletionCallback", "ANARI_VOID_POINTER"},
+      {"frameCompletionCallbackUserData", "ANARI_INT32"}};
+  const size_t atSet = g_warningLog.size();
+  anariSetParameter(d, frame, "size", ANARI_FLOAT32_VEC2, &size);
+  anariSetParameter(d, frame, "channel.color", ANARI_INT32, &notAType);
+  anariSetParameter(d, frame, "channel.depth", ANARI_DATA_TYPE, &float64);
+  anariSetParameter(
+      d, frame, "channel.primitiveId", ANARI_DATA_TYPE, &float32);
+  anariSetParameter(d, frame, "mpiCommunicator", ANARI_INT32, &notAComm);
+  anariSetParameter(
+      d, frame, "frameCompletionCallback", ANARI_VOID_POINTER, nullptr);
+  anariSetParameter(
+      d, frame, "frameCompletionCallbackUserData", ANARI_INT32, &notAComm);
+  c.expect(g_warningLog.size() == atSet,
+      "setting wrong-typed parameters warned before the commit: "
+          + (g_warningLog.empty() ? std::string() : g_warningLog.back()));
+
+  const size_t atCommit = g_warningLog.size();
+  anari::commitParameters(d, frame);
+  for (const auto &[name, type] : wrong) {
+    int count = 0;
+    for (size_t i = atCommit; i < g_warningLog.size(); i++) {
+      count += g_warningLog[i].find(std::string("'") + name + "'")
+          != std::string::npos;
+    }
+    c.expect(count == 1,
+        std::string("'") + name + "' set as " + type + " warned "
+            + std::to_string(count) + " times at commit, want once");
+  }
+
+  const size_t atRecommit = g_warningLog.size();
+  anari::commitParameters(d, frame);
+  c.expect(g_warningLog.size() == atRecommit,
+      "a second commit warned again: "
+          + (g_warningLog.size() > atRecommit ? g_warningLog.back()
+                                              : std::string()));
+  anari::release(d, frame);
+
+  if (!c.failures)
+    printf("PASS: rank %d: wrong-typed parameters warned at commit\n", rank);
+  return c.failures;
 }
 
 } // namespace
@@ -1302,6 +1473,8 @@ int main(int argc, char **argv)
   }
 
   failures += checkDeviceConformance(lib, d, rank);
+  if (opts.wrongTypes)
+    failures += checkWrongTypes(d, rank);
 
   if ((opts.comm != CommSplit::World
           || opts.firstComm.value_or(CommSplit::World) != CommSplit::World)
@@ -1327,6 +1500,8 @@ int main(int argc, char **argv)
   checkCudaDevice("after creating the frame");
   g_callback = {d, frame, rank, &finalLayout, &opts};
   int renders = 0;
+  // the last rank's, with --fail-last-rank
+  const bool rejectsColor = !compositable(opts.colorType);
 
   if (opts.twoFrames()) {
     const FrameState first{opts.resize ? kImageSize / 2u : kImageSize,
@@ -1355,6 +1530,19 @@ int main(int argc, char **argv)
     commitFrame(d, frame);
   }
 
+  // Every rank: a color type ptc cannot composite is rejected at commit
+  {
+    Checker c{rank};
+    const bool rejected = g_colorInvalidArguments > 0;
+    c.expect(rejected == rejectsColor,
+        rejectsColor ? "uncompositable channel.color not rejected at commit "
+                       "with ANARI_STATUS_INVALID_ARGUMENT"
+                     : "compositable channel.color rejected at commit");
+    if (rejectsColor && !c.failures)
+      printf("PASS: rank %d: channel.color rejected at commit\n", rank);
+    failures += c.failures;
+  }
+
   if (opts.uncommitted) {
     // ANARI parameters take effect on commit: rendering must still use the
     // committed size and color type
@@ -1366,6 +1554,8 @@ int main(int argc, char **argv)
 
   g_callback.rendering = &finalState;
   g_callback.finalFrame = true;
+  g_callback.renderFails = rejectsColor || opts.failLastRank;
+  g_callback.errorsBeforeRender = g_errors;
   const int errorsBefore = g_colorErrors;
   const int anyErrorsBefore = g_errors;
   renderAndWait(d, frame);
@@ -1375,7 +1565,7 @@ int main(int argc, char **argv)
   // process is still here, so nothing threw out of anariRenderFrame).
   {
     Checker c{rank};
-    const bool wantError = !compositable(opts.colorType);
+    const bool wantError = rejectsColor;
     const bool gotError = g_colorErrors > errorsBefore;
     if (opts.failLastRank && !wantError) {
       c.expect(g_errors > anyErrorsBefore,
@@ -1393,8 +1583,10 @@ int main(int argc, char **argv)
 
   if (opts.failLastRank) {
     // nothing was composited, so there is nothing to map
-    if (finalLayout.rank == 0)
-      failures += checkColorRefused(d, frame, "after a failure on one rank");
+    if (finalLayout.rank == 0) {
+      failures +=
+          checkColorRefused(d, frame, "after a failure on one rank", true);
+    }
   } else if (finalLayout.rank == 0) {
     failures += checkColor(d, frame, opts, finalLayout);
     failures += checkBackground(d, frame, opts, finalLayout);

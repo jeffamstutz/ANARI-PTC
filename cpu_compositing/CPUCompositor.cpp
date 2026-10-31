@@ -28,10 +28,6 @@
 
 namespace ptc {
 
-  inline std::ostream &operator<<(std::ostream &o,
-                                  const math::float3 v)
-  { o << "(" << v.x << "," << v.y << "," << v.z << ")"; return o; }
-  
   template<typename TASK_T>
   inline void parallel_for(size_t nTasks,
                            TASK_T&& taskFunction,
@@ -207,7 +203,6 @@ namespace ptc {
     mpi.comm = comm;
     MPI_Comm_rank(comm,&mpi.rank);
     MPI_Comm_size(comm,&mpi.size);
-    printf("#cpu compositor starting up, ranks %i/%i\n",mpi.rank,mpi.size);
     p2p.sendOffset.resize(mpi.size);
     p2p.sendCount.resize(mpi.size);
     p2p.recvOffset.resize(mpi.size);
@@ -231,10 +226,6 @@ namespace ptc {
     tbb::finalize(tbbHandle, std::nothrow);
   }
 
-  inline std::ostream &operator<<(std::ostream &o,
-                                  const CPUCompositor::Range range)
-  { o << "(" << range.begin << "," << range.end << ")"; return o; }
-  
   CPUCompositor::Range CPUCompositor::rangeOfPeer(int peer)
   {
     int numPixels = size.x*size.y;
