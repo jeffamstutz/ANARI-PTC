@@ -29,26 +29,27 @@
       ":" + std::to_string(__LINE__) + "): " + cudaGetErrorString(rc))
 
 #define CUDA_CHECK( call )                                              \
-  {                                                                     \
+  do {                                                                  \
     cudaError_t rc = call;                                              \
     if (rc != cudaSuccess)                                              \
       throw DC_CUDA_ERROR("", #call, rc);                               \
-  }
+  } while (0)
 
 #define CUDA_CALL(call) CUDA_CHECK(cuda##call)
 
 #define CUDA_CHECK2( where, call )                                      \
-  {                                                                     \
+  do {                                                                  \
     cudaError_t rc = call;                                              \
     if (rc != cudaSuccess)                                              \
-      throw DC_CUDA_ERROR(std::string(where ? where : "") + ": ",       \
-                          #call, rc);                                   \
-  }
+      throw DC_CUDA_ERROR(where ? std::string(where) + ": "             \
+                                : std::string(), #call, rc);            \
+  } while (0)
 
 #define CUDA_SYNC_CHECK()                                               \
-  {                                                                     \
-    cudaDeviceSynchronize();                                            \
-    cudaError_t rc = cudaGetLastError();                                \
+  do {                                                                  \
+    cudaError_t rc = cudaDeviceSynchronize();                           \
+    if (rc == cudaSuccess)                                              \
+      rc = cudaGetLastError();                                          \
     if (rc != cudaSuccess)                                              \
-      throw DC_CUDA_ERROR("", "cudaDeviceSynchronize", rc);             \
-  }
+      throw DC_CUDA_ERROR("", "an earlier asynchronous call", rc);      \
+  } while (0)

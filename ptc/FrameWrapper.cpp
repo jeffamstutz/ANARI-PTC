@@ -258,10 +258,7 @@ void FrameWrapper::warnAtCommit(std::string_view name,
 void FrameWrapper::reportStatus(
     ANARIStatusSeverity severity, const std::string &msg) const
 {
-  m_reportStatus(severity,
-      severity <= ANARI_SEVERITY_ERROR ? ANARI_STATUS_UNKNOWN_ERROR
-                                       : ANARI_STATUS_NO_ERROR,
-      msg.c_str());
+  m_reportStatus(severity, defaultStatusCode(severity), msg.c_str());
 }
 
 void FrameWrapper::unsetParameter(const char *_name)
@@ -583,7 +580,6 @@ void FrameWrapper::freeBuffers()
 
 void FrameWrapper::renderFrame()
 {
-  refuseFromCallback("render");
   // until this render succeeds
   m_lastRenderFailed = true;
 
@@ -656,10 +652,16 @@ void FrameWrapper::completeFrame()
   auto callback = m_committed.completionCallback;
   if (!callback)
     return;
-  m_inCompletionCallback = true;
+  // the app may release its last reference to the frame in there
+  helium::IntrusivePtr<FrameWrapper> self(this);
+  struct InCallback
+  {
+    bool &flag;
+    InCallback(bool &f) : flag(f) { flag = true; }
+    ~InCallback() { flag = false; }
+  } inCallback{m_inCompletionCallback};
   callback(
       m_committed.completionCallbackUserData, m_ptcDevice, (ANARIFrame)this);
-  m_inCompletionCallback = false;
 }
 
 void FrameWrapper::refuseFromCallback(const char *what) const

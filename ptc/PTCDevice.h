@@ -284,10 +284,7 @@ inline void PTCDevice::reportMessage(
   if (!defaultStatusCallback())
     return;
   auto msg = helium::string_printf(fmt, std::forward<Args>(args)...);
-  reportStatus(severity,
-      severity <= ANARI_SEVERITY_ERROR ? ANARI_STATUS_UNKNOWN_ERROR
-                                       : ANARI_STATUS_NO_ERROR,
-      msg.c_str());
+  reportStatus(severity, defaultStatusCode(severity), msg.c_str());
 }
 
 inline void PTCDevice::reportStatus(

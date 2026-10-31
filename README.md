@@ -161,8 +161,9 @@ built with `-DDC_VERBOSE=1`.)
   commit warns about it once.
 - A `channel.color` type ptc cannot composite (anything but `UFIXED8_VEC4`,
   `UFIXED8_RGBA_SRGB` and `FLOAT32_VEC4`) is rejected at commit with an
-  ERROR and `ANARI_STATUS_INVALID_ARGUMENT`. The frame then fails to render,
-  on every rank of its communicator, until a supported type is set or
+  ERROR and `ANARI_STATUS_INVALID_ARGUMENT`, once, at the commit after it
+  was set. The frame then fails to render, with an ERROR each time, on
+  every rank of its communicator, until a supported type is set or
   `channel.color` is unset.
 - After a failed render, mapping any channel is refused with a warning that
   says so. The frame completion callback still runs, after the render's

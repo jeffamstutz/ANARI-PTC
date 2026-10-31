@@ -49,6 +49,13 @@ namespace ptc {
   using FrameWrapperStatusHandler = std::function<void(
       ANARIStatusSeverity, ANARIStatusCode, const char *)>;
 
+  /*! the status code of a message without a more specific one */
+  inline ANARIStatusCode defaultStatusCode(ANARIStatusSeverity severity)
+  {
+    return severity <= ANARI_SEVERITY_ERROR ? ANARI_STATUS_UNKNOWN_ERROR
+                                            : ANARI_STATUS_NO_ERROR;
+  }
+
   /*! an error PTCDevice reports with this status code, instead of
       ANARI_STATUS_UNKNOWN_ERROR */
   struct StatusError : public std::runtime_error
@@ -116,7 +123,9 @@ namespace ptc {
         render, failed or not, once that render's error is reported */
     void completeFrame();
     /*! throws if called from inside this frame's completion callback;
-        'what' is the refused operation, e.g. "render" */
+        'what' is the refused operation, e.g. "render". commitParameters()
+        checks itself; renderFrame()'s caller checks, so that it can skip
+        completeFrame() then */
     void refuseFromCallback(const char *what) const;
 
   protected:
@@ -188,14 +197,15 @@ namespace ptc {
 
     /*! reports through the status callback, with ANARI_STATUS_NO_ERROR
         below ERROR and ANARI_STATUS_UNKNOWN_ERROR from ERROR up */
-    void reportStatus(ANARIStatusSeverity severity, const std::string &msg) const;
+    void reportStatus(
+        ANARIStatusSeverity severity, const std::string &msg) const;
     /*! makes the next commit warn that parameter 'name' was set as 'type'
         ('mem': its value), not as 'expected', and is ignored ('effect') */
     void warnAtCommit(std::string_view name,
-                      ANARIDataType type,
-                      const void *mem,
-                      const char *expected,
-                      const char *effect);
+        ANARIDataType type,
+        const void *mem,
+        const char *expected,
+        const char *effect);
 
     FrameWrapperNotificationHandler m_onObjectDestroy;
     FrameWrapperStatusHandler m_reportStatus;

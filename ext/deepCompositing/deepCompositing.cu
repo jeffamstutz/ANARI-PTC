@@ -196,7 +196,9 @@ namespace dc {
   }
 
 
+#if DC_VERBOSE
 #define LOG(a) std::cout << a << std::endl;
+#endif
     
   // void Compositor::enablePeerAccess()
   // {
@@ -327,8 +329,10 @@ namespace dc {
              compactedFragmentLists);
     out.write((char *)h_compactedFragmentLists.data(),
               numCompactedFragments*sizeof(compactedFragmentLists[0]));
+#if DC_VERBOSE
     std::cout << "SUCCESSFULLY DUMPED FRAME BUFFER, fbsize=" << fbSize.x << "x" << fbSize.y
               << " numFrags=" << numCompactedFragments << std::endl;
+#endif
   }
   
   /*! for debugging - load output from prev 'save' back in */
