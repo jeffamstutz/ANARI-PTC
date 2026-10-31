@@ -81,32 +81,35 @@ namespace ptc {
 
   namespace {
 
-  /*! Makes 'gpu' current on the calling thread while it exists, then makes
-      current again whatever context was current before (none included), so
-      that the app and the wrapped device never see ptc's GPU. A negative
-      'gpu' (no GPU picked yet) does nothing. */
-  class DeviceScope
-  {
-   public:
-    explicit DeviceScope(int gpu)
+    /*! Makes 'gpu' current on the calling thread while it exists, then
+        makes current again whatever context was current before (none
+        included), so that the app and the wrapped device never see ptc's
+        GPU. A negative 'gpu' (no GPU picked yet) does nothing. */
+    class CurrentGPU
     {
-      if (gpu < 0 || cuCtxGetCurrent(&m_previous) != CUDA_SUCCESS)
-        return;
-      m_restore = true;
-      cudaSetDevice(gpu);
-    }
-    ~DeviceScope()
-    {
-      if (m_restore)
-        cuCtxSetCurrent(m_previous);
-    }
-    DeviceScope(const DeviceScope &) = delete;
-    DeviceScope &operator=(const DeviceScope &) = delete;
+     public:
+      explicit CurrentGPU(int gpu)
+      {
+        if (gpu < 0)
+          return;
+        // fails only before CUDA is initialized, when no context is current
+        if (cuCtxGetCurrent(&m_previous) != CUDA_SUCCESS)
+          m_previous = nullptr;
+        m_restore = true;
+        cudaSetDevice(gpu);
+      }
+      ~CurrentGPU()
+      {
+        if (m_restore)
+          cuCtxSetCurrent(m_previous);
+      }
+      CurrentGPU(const CurrentGPU &) = delete;
+      CurrentGPU &operator=(const CurrentGPU &) = delete;
 
-   private:
-    CUcontext m_previous{nullptr};
-    bool m_restore{false};
-  };
+     private:
+      CUcontext m_previous{nullptr};
+      bool m_restore{false};
+    };
 
   } // namespace
 
@@ -126,11 +129,13 @@ namespace ptc {
   ::~CUDAFrameWrapper()
   {
     CUDAFrameWrapper::cleanup();
+    // on its GPU, as FrameWrapper::~FrameWrapper() expects
+    CUDAFrameWrapper::destroyCompositor();
   }
   
   void CUDAFrameWrapper::allocate()
   {
-    DeviceScope gpu(m_gpu);
+    CurrentGPU onGPU(m_gpu);
     const auto &size = m_bufferSize;
     const size_t numPixels = size_t(size.x) * size.y;
 
@@ -150,7 +155,7 @@ namespace ptc {
 
   void CUDAFrameWrapper::stage(const void *color, const float *depth)
   {
-    DeviceScope gpu(m_gpu);
+    CurrentGPU onGPU(m_gpu);
     const auto &size = m_bufferSize;
     const size_t numPixels = size_t(size.x) * size.y;
     const size_t colorSize = colorPixelSize(m_bufferColorType);
@@ -176,7 +181,7 @@ namespace ptc {
 
   void CUDAFrameWrapper::composite()
   {
-    DeviceScope gpu(m_gpu);
+    CurrentGPU onGPU(m_gpu);
     const auto &size = m_bufferSize;
     const size_t numPixels = size_t(size.x) * size.y;
     const size_t colorSize = colorPixelSize(m_bufferColorType);
@@ -229,14 +234,14 @@ namespace ptc {
           + " (" + prop.name + ")";
       m_reportStatus(ANARI_SEVERITY_INFO, msg.c_str());
     }
-    // the compositor makes it current around its own CUDA work, and
-    // restores the current device afterwards
+    // the compositor also switches to it for its own CUDA calls (restoring
+    // only the device, not the app's context: CurrentGPU does that)
     m_deepComp->affinitizedGPU = m_gpu;
   }
 
   void CUDAFrameWrapper::destroyCompositor()
   {
-    DeviceScope gpu(m_gpu);
+    CurrentGPU onGPU(m_gpu);
     m_deepComp.reset();
   }
 
@@ -245,7 +250,7 @@ namespace ptc {
     // nothing is allocated before the first compositor picked a GPU
     if (m_gpu < 0)
       return;
-    DeviceScope gpu(m_gpu);
+    CurrentGPU onGPU(m_gpu);
     if (d_depth) 
       cudaFree(d_depth);
     if (d_color_in)

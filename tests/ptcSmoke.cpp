@@ -709,23 +709,24 @@ CallbackContext g_callback;
 int g_appCudaDevice = -1;
 int g_cudaDeviceFailures = 0;
 
-// Makes a GPU current that ptc would not pick for this rank if there are
-// several: ptc picks by rank among the ranks on the node, this the next one.
+// Makes a GPU current that ptc does not pick for this rank, where it can:
+// ptc picks a rank's GPU by its rank among the ranks on the node, and with
+// all ranks on one node and MPI_COMM_WORLD this picks the next GPU. With one
+// GPU, or after a split, the two may coincide and the check cannot fail.
 void selectAppCudaDevice(int rank)
 {
 #ifdef PTC_TEST_CUDA
+  Checker c{rank};
   const int count = cudaDeviceCount();
-  if (count == 0) {
-    printf("FAIL: rank %d: no CUDA device\n", rank);
-    g_cudaDeviceFailures++;
-    return;
+  c.expect(count > 0, "no CUDA device");
+  if (count > 0) {
+    const int device = (rank + 1) % count;
+    const bool ok = makeCudaDeviceCurrent(device);
+    c.expect(ok, "cannot make GPU " + std::to_string(device) + " current");
+    if (ok)
+      g_appCudaDevice = device;
   }
-  g_appCudaDevice = (rank + 1) % count;
-  if (!makeCudaDeviceCurrent(g_appCudaDevice)) {
-    printf("FAIL: rank %d: cannot make GPU %d current\n", rank, g_appCudaDevice);
-    g_cudaDeviceFailures++;
-    g_appCudaDevice = -1;
-  }
+  g_cudaDeviceFailures += c.failures;
 #else
   (void)rank;
 #endif
@@ -737,18 +738,14 @@ void checkCudaDevice(const char *when)
 #ifdef PTC_TEST_CUDA
   if (g_appCudaDevice < 0)
     return;
+  int rank = 0;
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+  Checker c{rank};
   const int current = currentCudaDevice();
-  if (current != g_appCudaDevice) {
-    int rank = 0;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    printf("FAIL: rank %d: current CUDA device is %d %s, the app made %d "
-           "current\n",
-        rank,
-        current,
-        when,
-        g_appCudaDevice);
-    g_cudaDeviceFailures++;
-  }
+  c.expect(current == g_appCudaDevice,
+      "current CUDA device is " + std::to_string(current) + " " + when
+          + ", the app made " + std::to_string(g_appCudaDevice) + " current");
+  g_cudaDeviceFailures += c.failures;
 #else
   (void)when;
 #endif
