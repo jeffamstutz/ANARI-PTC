@@ -9,3 +9,4 @@
 - 07 honor-mpi-communicator — needs-user (non-blocking) — 9184d6e 75ecea8 — followups/07-collectiveness-and-comm-lifetime.md
 - 09 srgb-correct-blending — needs-user (non-blocking) — 56c8c5d — followups/09-blend-test-and-cuda-precision.md
 - 10 other-frame-channels — needs-user (non-blocking) — 338e66a 62e2241 — followups/10-id-compositing-contracts.md
+- 11 mpi-lifetime-multiple-devices — needs-user (non-blocking) — 5f0e01f 166d541 — followups/11-mpi-lifetime-and-agreement-scope.md
