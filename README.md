@@ -53,7 +53,53 @@ a configure-time warning) if `mpiexec` or `helide` cannot be found.
 # Using ANARI_PTC
 
 Assuming you have a data-parallel application that already has a ANARI
-rendering path, just use this with `ANARI_LIBRARY` set to `ptc`
+rendering path, just use this with `ANARI_LIBRARY` set to `ptc`, and choose
+the device ptc wraps as below.
+
+## Choosing the wrapped device
+
+ptc renders each rank's data with another ANARI device (the *wrapped*
+device) and composites the results. Which library it wraps is decided
+when the device first needs it, in this order:
+
+1. The device parameter `wrappedLibrary` (`ANARI_STRING`, a library name
+   as for `anariLoadLibrary`), if the app set it. There is no fallback:
+   if it fails to load, that is a fatal error.
+2. The environment variable `PTC_ANARI_LIBRARY`, if set. If it fails to
+   load, ptc warns and falls back to `helide`.
+3. `helide`.
+
+The device parameter `wrappedDeviceSubtype` (`ANARI_STRING`, default
+`"default"`) selects the device subtype created from that library.
+
+```cpp
+anariSetParameter(device, device, "wrappedLibrary", ANARI_STRING, "visrtx");
+anariCommitParameters(device, device);
+```
+
+Both parameters take effect only if they are committed before the first
+object is created or the device is otherwise queried (`anariGetProperty`,
+`anariGetObjectSubtypes`, ...): that is when ptc loads the wrapped device.
+Changing them later is ignored with a warning. They are not forwarded to
+the wrapped device; every other device parameter is.
+
+If the wrapped library or device fails to load, ptc reports an
+`ANARI_SEVERITY_FATAL_ERROR` once. After that, object creation returns
+null, and every call that needs the wrapped device reports an error and
+does nothing. ptc's own device properties (`extension`, `version`) still
+answer.
+
+The device property `version` (and `version.major`/`.minor`/`.patch`/
+`.name`) is ptc's own. `anariVersion.*`, `geometryMaxIndex` and other
+properties are the wrapped device's. The `extension` list is the wrapped
+device's, plus `KHR_DATA_PARALLEL_MPI` and `KHR_FRAME_COMPLETION_CALLBACK`,
+which ptc implements itself.
+
+The library-level list from `anariGetDeviceExtensions(library, ...)` has
+no device to read `wrappedLibrary` from, so it reflects only
+`PTC_ANARI_LIBRARY` or `helide` (with the same warning on fallback), plus
+ptc's own extensions. When a device wraps a library chosen by parameter,
+query its `extension` property instead.
 
 ## Compositing over a communicator other than `MPI_COMM_WORLD`
 

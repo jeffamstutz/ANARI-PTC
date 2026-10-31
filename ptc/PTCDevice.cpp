@@ -32,6 +32,9 @@
 
 namespace ptc {
 
+static const char *WRAPPED_LIBRARY_PARAM = "wrappedLibrary";
+static const char *WRAPPED_SUBTYPE_PARAM = "wrappedDeviceSubtype";
+
 std::mutex PTCDevice::s_mpiMutex;
 int PTCDevice::s_numPrivateMpiHolders = 0;
 bool PTCDevice::s_mpiInitializedPrivately = false;
@@ -58,8 +61,7 @@ ANARIArray1D PTCDevice::newArray1D(const void *appMemory,
     uint64_t numItems)
 {
   return guarded("anariNewArray1D", ANARIArray1D(nullptr), [&] {
-    initDevice();
-    return m_ptd->newArray1D(appMemory, deleter, userData, type, numItems);
+    return wrapped().newArray1D(appMemory, deleter, userData, type, numItems);
   });
 }
 
@@ -71,8 +73,7 @@ ANARIArray2D PTCDevice::newArray2D(const void *appMemory,
     uint64_t numItems2)
 {
   return guarded("anariNewArray2D", ANARIArray2D(nullptr), [&] {
-    initDevice();
-    return m_ptd->newArray2D(
+    return wrapped().newArray2D(
         appMemory, deleter, userData, type, numItems1, numItems2);
   });
 }
@@ -86,8 +87,7 @@ ANARIArray3D PTCDevice::newArray3D(const void *appMemory,
     uint64_t numItems3)
 {
   return guarded("anariNewArray3D", ANARIArray3D(nullptr), [&] {
-    initDevice();
-    return m_ptd->newArray3D(
+    return wrapped().newArray3D(
         appMemory, deleter, userData, type, numItems1, numItems2, numItems3);
   });
 }
@@ -95,8 +95,7 @@ ANARIArray3D PTCDevice::newArray3D(const void *appMemory,
 ANARICamera PTCDevice::newCamera(const char *subtype)
 {
   return guarded("anariNewCamera", ANARICamera(nullptr), [&] {
-    initDevice();
-    return m_ptd->newCamera(subtype);
+    return wrapped().newCamera(subtype);
   });
 }
 
@@ -108,10 +107,10 @@ ANARIFrame PTCDevice::newFrame()
   typedef CPUFrameWrapper FrameWrapperT;
 #endif
   return guarded("anariNewFrame", ANARIFrame(nullptr), [&] {
-    initDevice();
+    auto &w = wrapped();
     auto *fw = new FrameWrapperT(this_device(),
-        (ANARIDevice)m_ptd,
-        m_ptd->newFrame(),
+        (ANARIDevice)&w,
+        w.newFrame(),
         [=](const void *f) { this->removeFrameWrapper((FrameWrapper *)f); },
         [=](ANARIStatusSeverity severity, const char *msg) {
           this->reportMessage(severity, "%s", msg);
@@ -124,88 +123,77 @@ ANARIFrame PTCDevice::newFrame()
 ANARIGeometry PTCDevice::newGeometry(const char *subtype)
 {
   return guarded("anariNewGeometry", ANARIGeometry(nullptr), [&] {
-    initDevice();
-    return m_ptd->newGeometry(subtype);
+    return wrapped().newGeometry(subtype);
   });
 }
 
 ANARIGroup PTCDevice::newGroup()
 {
   return guarded("anariNewGroup", ANARIGroup(nullptr), [&] {
-    initDevice();
-    return m_ptd->newGroup();
+    return wrapped().newGroup();
   });
 }
 
 ANARIInstance PTCDevice::newInstance(const char *subtype)
 {
   return guarded("anariNewInstance", ANARIInstance(nullptr), [&] {
-    initDevice();
-    return m_ptd->newInstance(subtype);
+    return wrapped().newInstance(subtype);
   });
 }
 
 ANARILight PTCDevice::newLight(const char *subtype)
 {
   return guarded("anariNewLight", ANARILight(nullptr), [&] {
-    initDevice();
-    return m_ptd->newLight(subtype);
+    return wrapped().newLight(subtype);
   });
 }
 
 ANARIMaterial PTCDevice::newMaterial(const char *subtype)
 {
   return guarded("anariNewMaterial", ANARIMaterial(nullptr), [&] {
-    initDevice();
-    return m_ptd->newMaterial(subtype);
+    return wrapped().newMaterial(subtype);
   });
 }
 
 ANARIRenderer PTCDevice::newRenderer(const char *subtype)
 {
   return guarded("anariNewRenderer", ANARIRenderer(nullptr), [&] {
-    initDevice();
-    return m_ptd->newRenderer(subtype);
+    return wrapped().newRenderer(subtype);
   });
 }
 
 ANARISampler PTCDevice::newSampler(const char *subtype)
 {
   return guarded("anariNewSampler", ANARISampler(nullptr), [&] {
-    initDevice();
-    return m_ptd->newSampler(subtype);
+    return wrapped().newSampler(subtype);
   });
 }
 
 ANARISpatialField PTCDevice::newSpatialField(const char *subtype)
 {
   return guarded("anariNewSpatialField", ANARISpatialField(nullptr), [&] {
-    initDevice();
-    return m_ptd->newSpatialField(subtype);
+    return wrapped().newSpatialField(subtype);
   });
 }
 
 ANARISurface PTCDevice::newSurface()
 {
   return guarded("anariNewSurface", ANARISurface(nullptr), [&] {
-    initDevice();
-    return m_ptd->newSurface();
+    return wrapped().newSurface();
   });
 }
 
 ANARIVolume PTCDevice::newVolume(const char *subtype)
 {
   return guarded("anariNewVolume", ANARIVolume(nullptr), [&] {
-    initDevice();
-    return m_ptd->newVolume(subtype);
+    return wrapped().newVolume(subtype);
   });
 }
 
 ANARIWorld PTCDevice::newWorld()
 {
   return guarded("anariNewWorld", ANARIWorld(nullptr), [&] {
-    initDevice();
-    return m_ptd->newWorld();
+    return wrapped().newWorld();
   });
 }
 
@@ -220,7 +208,7 @@ void PTCDevice::setParameter(
     else if (isFrameHandle(object))
       asFrameWrapper(object)->setParameter(name, type, mem);
     else
-      m_ptd->setParameter(object, name, type, mem);
+      wrapped().setParameter(object, name, type, mem);
   });
 }
 
@@ -232,7 +220,7 @@ void PTCDevice::unsetParameter(ANARIObject object, const char *name)
     else if (isFrameHandle(object))
       asFrameWrapper(object)->unsetParameter(name);
     else
-      m_ptd->unsetParameter(object, name);
+      wrapped().unsetParameter(object, name);
   });
 }
 
@@ -244,7 +232,7 @@ void PTCDevice::unsetAllParameters(ANARIObject object)
     else if (isFrameHandle(object))
       asFrameWrapper(object)->unsetAllParameters();
     else
-      m_ptd->unsetAllParameters(object);
+      wrapped().unsetAllParameters(object);
   });
 }
 
@@ -259,7 +247,7 @@ void *PTCDevice::mapParameterArray1D(ANARIObject object,
       return asFrameWrapper(object)->mapParameterArray1D(
           name, dataType, numElements1, elementStride);
     } else {
-      return m_ptd->mapParameterArray1D(
+      return wrapped().mapParameterArray1D(
           object, name, dataType, numElements1, elementStride);
     }
   });
@@ -277,7 +265,7 @@ void *PTCDevice::mapParameterArray2D(ANARIObject object,
       return asFrameWrapper(object)->mapParameterArray2D(
           name, dataType, numElements1, numElements2, elementStride);
     } else {
-      return m_ptd->mapParameterArray2D(
+      return wrapped().mapParameterArray2D(
           object, name, dataType, numElements1, numElements2, elementStride);
     }
   });
@@ -300,7 +288,7 @@ void *PTCDevice::mapParameterArray3D(ANARIObject object,
           numElements3,
           elementStride);
     } else {
-      return m_ptd->mapParameterArray3D(object,
+      return wrapped().mapParameterArray3D(object,
           name,
           dataType,
           numElements1,
@@ -317,7 +305,7 @@ void PTCDevice::unmapParameterArray(ANARIObject object, const char *name)
     if (isFrameHandle(object))
       asFrameWrapper(object)->unmapParameterArray(name);
     else
-      m_ptd->unmapParameterArray(object, name);
+      wrapped().unmapParameterArray(object, name);
   });
 }
 
@@ -329,7 +317,7 @@ void PTCDevice::commitParameters(ANARIObject object)
     else if (isFrameHandle(object))
       asFrameWrapper(object)->commitParameters();
     else
-      m_ptd->commitParameters(object);
+      wrapped().commitParameters(object);
   });
 }
 
@@ -347,7 +335,7 @@ void PTCDevice::release(ANARIObject o)
     } else if (isFrameHandle(o))
       asFrameWrapper(o)->release();
     else
-      m_ptd->release(o);
+      wrapped().release(o);
   });
 }
 
@@ -359,21 +347,21 @@ void PTCDevice::retain(ANARIObject o)
     else if (isFrameHandle(o))
       asFrameWrapper(o)->retain();
     else
-      m_ptd->retain(o);
+      wrapped().retain(o);
   });
 }
 
 void *PTCDevice::mapArray(ANARIArray a)
 {
   return guarded("anariMapArray", (void *)nullptr, [&] {
-    return m_ptd->mapArray(a);
+    return wrapped().mapArray(a);
   });
 }
 
 void PTCDevice::unmapArray(ANARIArray a)
 {
   guarded("anariUnmapArray", [&] {
-    m_ptd->unmapArray(a);
+    wrapped().unmapArray(a);
   });
 }
 
@@ -390,7 +378,7 @@ int PTCDevice::getProperty(ANARIObject object,
     else if (isFrameHandle(object))
       return asFrameWrapper(object)->getProperty(name, type, mem, size, mask);
     else
-      return m_ptd->getProperty(object, name, type, mem, size, mask);
+      return wrapped().getProperty(object, name, type, mem, size, mask);
   });
 }
 
@@ -399,8 +387,7 @@ int PTCDevice::getProperty(ANARIObject object,
 const char **PTCDevice::getObjectSubtypes(ANARIDataType objectType)
 {
   return guarded("anariGetObjectSubtypes", (const char **)nullptr, [&] {
-    initDevice();
-    return m_ptd->getObjectSubtypes(objectType);
+    return wrapped().getObjectSubtypes(objectType);
   });
 }
 
@@ -411,9 +398,8 @@ const void *PTCDevice::getObjectInfo(ANARIDataType objectType,
 {
   const void *const onError = nullptr;
   return guarded("anariGetObjectInfo", onError, [&]() -> const void * {
-    initDevice();
-    auto *info =
-        m_ptd->getObjectInfo(objectType, objectSubtype, infoName, infoType);
+    auto *info = wrapped().getObjectInfo(
+        objectType, objectSubtype, infoName, infoType);
     if (objectType == ANARI_FRAME && infoName
         && std::strcmp(infoName, "parameter") == 0
         && infoType == ANARI_PARAMETER_LIST) {
@@ -435,8 +421,7 @@ const void *PTCDevice::getParameterInfo(ANARIDataType objectType,
     if (isMpiCommunicatorParameter(objectType, parameterName, parameterType))
       return mpiCommunicatorInfo(infoName, infoType);
 
-    initDevice();
-    return m_ptd->getParameterInfo(objectType,
+    return wrapped().getParameterInfo(objectType,
         objectSubtype,
         parameterName,
         parameterType,
@@ -454,14 +439,14 @@ const void *PTCDevice::frameBufferMap(ANARIFrame f,
     ANARIDataType *pixelType)
 {
   return guarded("anariMapFrame", (const void *)nullptr, [&] {
-    return asFrameWrapper(f)->frameBufferMap(channel, width, height, pixelType);
+    return frameWrapper(f)->frameBufferMap(channel, width, height, pixelType);
   });
 }
 
 void PTCDevice::frameBufferUnmap(ANARIFrame f, const char *channel)
 {
   guarded("anariUnmapFrame", [&] {
-    asFrameWrapper(f)->frameBufferUnmap(channel);
+    frameWrapper(f)->frameBufferUnmap(channel);
   });
 }
 
@@ -470,21 +455,21 @@ void PTCDevice::frameBufferUnmap(ANARIFrame f, const char *channel)
 void PTCDevice::renderFrame(ANARIFrame f)
 {
   guarded("anariRenderFrame", [&] {
-    asFrameWrapper(f)->renderFrame();
+    frameWrapper(f)->renderFrame();
   });
 }
 
 int PTCDevice::frameReady(ANARIFrame f, ANARIWaitMask m)
 {
   return guarded("anariFrameReady", 0, [&] {
-    return asFrameWrapper(f)->frameReady(m);
+    return frameWrapper(f)->frameReady(m);
   });
 }
 
 void PTCDevice::discardFrame(ANARIFrame f)
 {
   guarded("anariDiscardFrame", [&] {
-    asFrameWrapper(f)->discardFrame();
+    frameWrapper(f)->discardFrame();
   });
 }
 
@@ -540,6 +525,9 @@ PTCDevice::~PTCDevice()
   }
 }
 
+// Loads the wrapped library and creates the wrapped device, once. A failure
+// is reported once as a FATAL_ERROR; from then on wrapped() throws, so every
+// call that needs the wrapped device reports an ERROR and returns nothing.
 void PTCDevice::initDevice()
 {
   if (m_initialized)
@@ -550,23 +538,49 @@ void PTCDevice::initDevice()
   // first: if this throws, nothing else was set up yet
   acquireMpi();
 
-  bool usedFallback = false;
-  ANARILibrary lib = loadWrappedLibrary(
-      defaultStatusCallback(), defaultStatusCallbackUserPtr(), &usedFallback);
-  if (usedFallback)
-    reportMessage(ANARI_SEVERITY_WARNING, "falling back to 'helide'");
+  // whatever happens next, it happens once
+  m_initialized = true;
 
-  if (!lib) {
-    reportMessage(ANARI_SEVERITY_FATAL_ERROR, "failed to load passthrough lib");
+  auto w = loadWrappedLibrary(m_wrappedLibraryName,
+      defaultStatusCallback(),
+      defaultStatusCallbackUserPtr());
+  if (!w.fallbackWarning.empty())
+    reportMessage(ANARI_SEVERITY_WARNING, "%s", w.fallbackWarning.c_str());
+  if (!w.library) {
+    m_initFailure = w.failure;
+    reportMessage(ANARI_SEVERITY_FATAL_ERROR, "%s", m_initFailure.c_str());
     return;
   }
 
-  m_ptd = (anari::DeviceImpl *)anariNewDevice(lib, "default");
+  m_ptd = (anari::DeviceImpl *)anariNewDevice(
+      w.library, m_wrappedDeviceSubtype.c_str());
+  if (!m_ptd) {
+    m_initFailure = "failed to create a '" + m_wrappedDeviceSubtype
+        + "' device from the wrapped ANARI library '" + w.name + "'";
+    reportMessage(ANARI_SEVERITY_FATAL_ERROR, "%s", m_initFailure.c_str());
+    anariUnloadLibrary(w.library);
+    return;
+  }
 
+  reportMessage(ANARI_SEVERITY_DEBUG,
+      "wrapping a '%s' device from ANARI library '%s'",
+      m_wrappedDeviceSubtype.c_str(),
+      w.name.c_str());
+}
+
+anari::DeviceImpl &PTCDevice::wrapped()
+{
+  initDevice();
   if (!m_ptd)
-    reportMessage(ANARI_SEVERITY_FATAL_ERROR, "failed to create device");
+    throw std::runtime_error("no wrapped device: " + m_initFailure);
+  return *m_ptd;
+}
 
-  m_initialized = true;
+FrameWrapper *PTCDevice::frameWrapper(ANARIFrame f)
+{
+  if (!isFrameHandle(f))
+    throw std::runtime_error("not a frame of this device");
+  return asFrameWrapper(f);
 }
 
 void PTCDevice::acquireMpi()
@@ -601,18 +615,41 @@ void PTCDevice::acquireMpi()
       initializedHere ? "initialized MPI" : "MPI already initialized");
 }
 
+// 'wrappedLibrary' and 'wrappedDeviceSubtype' choose the wrapped device; they
+// take effect only if committed before anything initialized the device. The
+// other device parameters are forwarded to the wrapped device.
 void PTCDevice::deviceCommitParameters()
 {
+  const auto library = getParamString(WRAPPED_LIBRARY_PARAM, "");
+  const auto subtype = getParamString(WRAPPED_SUBTYPE_PARAM, "default");
+  if (!m_initialized) {
+    m_wrappedLibraryName = library;
+    m_wrappedDeviceSubtype = subtype;
+  } else if (library != m_wrappedLibraryName
+      || subtype != m_wrappedDeviceSubtype) {
+    reportMessage(ANARI_SEVERITY_WARNING,
+        "'%s' and '%s' are ignored: the wrapped device was already chosen "
+        "(commit them before creating objects or querying the device)",
+        WRAPPED_LIBRARY_PARAM,
+        WRAPPED_SUBTYPE_PARAM);
+  }
+
   initDevice();
-  auto handle = (ANARIDevice)m_ptd;
-  m_ptd->unsetAllParameters(handle);
+  if (!m_ptd)
+    return; // already reported as a FATAL_ERROR; nothing to forward to
+  auto &w = *m_ptd;
+  auto handle = w.this_device();
+  w.unsetAllParameters(handle);
   for (auto param = params_begin(); param != params_end(); ++param) {
-    m_ptd->setParameter(handle,
+    if (param->first == WRAPPED_LIBRARY_PARAM
+        || param->first == WRAPPED_SUBTYPE_PARAM)
+      continue;
+    w.setParameter(handle,
         param->first.c_str(),
         param->second.type(),
         param->second.data());
   }
-  m_ptd->commitParameters(handle);
+  w.commitParameters(handle);
 }
 
 // Under KHR_DATA_PARALLEL_MPI anariGetProperty is collective, but device
@@ -626,23 +663,52 @@ int PTCDevice::deviceGetProperty(
       && type == ANARI_STRING_LIST) {
     std::lock_guard<std::mutex> lock(m_extensionsMutex);
     if (!m_extensions) {
-      const char *const *wrapped = nullptr;
+      const char *const *wrappedList = nullptr;
       if (m_ptd) {
         m_ptd->getProperty(m_ptd->this_device(),
             "extension",
             ANARI_STRING_LIST,
-            &wrapped,
-            sizeof(wrapped),
+            &wrappedList,
+            sizeof(wrappedList),
             ANARI_WAIT);
       }
-      m_extensions = std::make_unique<ExtensionList>(wrapped);
+      m_extensions = std::make_unique<ExtensionList>(wrappedList);
     }
     helium::writeToVoidP(mem, m_extensions->data());
     return 1;
   }
 
-  // Everything else (version, anariVersion.*, geometryMaxIndex, ...) is
-  // whatever the wrapped device reports.
+  // ptc's own version (the wrapped device's anariVersion.* still applies)
+  static const std::string versionName = PTC_VERSION_STRING;
+  const std::string prop = name ? name : "";
+  if (prop == "version" && type == ANARI_INT32) {
+    helium::writeToVoidP(mem,
+        int32_t(PTC_VERSION_MAJOR * 1000 + PTC_VERSION_MINOR * 100
+            + PTC_VERSION_PATCH));
+    return 1;
+  } else if (prop == "version.major" && type == ANARI_INT32) {
+    helium::writeToVoidP(mem, int32_t(PTC_VERSION_MAJOR));
+    return 1;
+  } else if (prop == "version.minor" && type == ANARI_INT32) {
+    helium::writeToVoidP(mem, int32_t(PTC_VERSION_MINOR));
+    return 1;
+  } else if (prop == "version.patch" && type == ANARI_INT32) {
+    helium::writeToVoidP(mem, int32_t(PTC_VERSION_PATCH));
+    return 1;
+  } else if (prop == "version.name.size" && type == ANARI_UINT64) {
+    helium::writeToVoidP(mem, uint64_t(versionName.size() + 1));
+    return 1;
+  } else if (prop == "version.name" && type == ANARI_STRING) {
+    if (!mem || size == 0)
+      return 0;
+    std::memset(mem, 0, size);
+    std::memcpy(
+        mem, versionName.data(), std::min(uint64_t(versionName.size()), size - 1));
+    return 1;
+  }
+
+  // Everything else (anariVersion.*, geometryMaxIndex, ...) is whatever the
+  // wrapped device reports.
   if (!m_ptd)
     return 0;
   return m_ptd->getProperty(

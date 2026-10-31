@@ -28,8 +28,15 @@ endif()
 get_filename_component(PTC_HELIDE_DIR "${PTC_HELIDE_LIBRARY}" DIRECTORY)
 message("#ptc: testing with mpiexec ${MPIEXEC_EXECUTABLE} and ${PTC_HELIDE_LIBRARY}")
 
+# The tests check that ptc reports its own version
+set(PTC_TEST_VERSION_DEFINITIONS
+  PTC_VERSION_MAJOR=${ANARI_PTC_VERSION_MAJOR}
+  PTC_VERSION_MINOR=${ANARI_PTC_VERSION_MINOR}
+  PTC_VERSION_PATCH=${ANARI_PTC_VERSION_PATCH})
+
 add_executable(ptcSmoke ptcSmoke.cpp)
 target_link_libraries(ptcSmoke PRIVATE anari::anari MPI::MPI_CXX)
+target_compile_definitions(ptcSmoke PRIVATE ${PTC_TEST_VERSION_DEFINITIONS})
 # ptc is loaded at runtime by anari::loadLibrary, so make sure it is built
 add_dependencies(ptcSmoke anari_library_ptc)
 
@@ -48,12 +55,17 @@ endfunction()
 # The freshly built ptc must come first on the search path: an installed
 # libanari_library_ptc.so may sit next to helide. ptcSmoke also checks which
 # ptc library it actually loaded (--expect-library).
+# PTC_ANARI_LIBRARY is helide, or the optional third argument.
 function(ptc_set_test_environment test ranks)
+  set(envLibrary helide)
+  if (ARGC GREATER 2)
+    set(envLibrary ${ARGV2})
+  endif()
   set(libdirs "$<TARGET_FILE_DIR:anari_library_ptc>" "${PTC_HELIDE_DIR}")
   set_tests_properties(${test} PROPERTIES
     TIMEOUT 120
     PROCESSORS ${ranks}
-    ENVIRONMENT "PTC_ANARI_LIBRARY=helide")
+    ENVIRONMENT "PTC_ANARI_LIBRARY=${envLibrary}")
   if (CMAKE_VERSION VERSION_GREATER_EQUAL 3.22)
     # each prepend goes in front of the previous one, so add in reverse
     set(mods "")
@@ -74,17 +86,20 @@ function(ptc_set_test_environment test ranks)
 endfunction()
 
 # Add ptc_smoke_<name>_<ranks>ranks for each rank count in RANKS (default
-# PTC_TEST_RANKS).
+# PTC_TEST_RANKS), with PTC_ANARI_LIBRARY=<ENV_LIBRARY> (default helide).
 function(ptc_add_smoke_tests name)
-  cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "RANKS")
+  cmake_parse_arguments(PARSE_ARGV 1 arg "" "ENV_LIBRARY" "RANKS")
   if (NOT arg_RANKS)
     set(arg_RANKS ${PTC_TEST_RANKS})
+  endif()
+  if (NOT arg_ENV_LIBRARY)
+    set(arg_ENV_LIBRARY helide)
   endif()
   foreach(ranks ${arg_RANKS})
     set(test ptc_smoke_${name}_${ranks}ranks)
     ptc_smoke_command(cmd ${ranks} ${arg_UNPARSED_ARGUMENTS})
     add_test(NAME ${test} COMMAND ${cmd})
-    ptc_set_test_environment(${test} ${ranks})
+    ptc_set_test_environment(${test} ${ranks} ${arg_ENV_LIBRARY})
   endforeach()
 endfunction()
 
@@ -181,6 +196,38 @@ ptc_add_smoke_tests(ufixed8_blend_split --color ufixed8 --background blend
 # each half composites its own ids
 ptc_add_smoke_tests(ids_split --color ufixed8 --comm split --ids
   ${PTC_SPLIT_RANKS})
+
+# Wrapped library selection (ticket 12). The device parameter
+# 'wrappedLibrary' wins over PTC_ANARI_LIBRARY, which here names a library
+# that does not exist: loading helide through the parameter must not warn,
+# and the image must be right.
+set(PTC_TEST_MISSING_LIBRARY ptcTestNoSuchLibrary)
+ptc_add_smoke_tests(wrapped_library_parameter --color ufixed8 --depth
+  --wrapped-library helide ENV_LIBRARY ${PTC_TEST_MISSING_LIBRARY})
+
+# Wrapped library load failure and fallback (ticket 12): a missing
+# 'wrappedLibrary' is a FATAL_ERROR after which no API call crashes; a missing
+# PTC_ANARI_LIBRARY falls back to helide with a WARNING.
+add_executable(ptcWrapped ptcWrapped.cpp)
+target_link_libraries(ptcWrapped PRIVATE anari::anari MPI::MPI_CXX)
+target_compile_definitions(ptcWrapped PRIVATE ${PTC_TEST_VERSION_DEFINITIONS})
+add_dependencies(ptcWrapped anari_library_ptc)
+foreach(scenario missing fallback)
+  if (scenario STREQUAL "missing")
+    set(envLibrary helide)
+  else()
+    set(envLibrary ${PTC_TEST_MISSING_LIBRARY})
+  endif()
+  foreach(ranks 1 2)
+    set(test ptc_wrapped_${scenario}_${ranks}ranks)
+    add_test(NAME ${test} COMMAND
+      ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} ${ranks}
+      ${MPIEXEC_PREFLAGS} $<TARGET_FILE:ptcWrapped> ${MPIEXEC_POSTFLAGS}
+      --expect-library $<TARGET_FILE:anari_library_ptc>
+      --scenario ${scenario})
+    ptc_set_test_environment(${test} ${ranks} ${envLibrary})
+  endforeach()
+endforeach()
 
 # MPI lifetime (ticket 11): with and without the app initializing MPI, ptc
 # keeps MPI initialized until its last device is released, and finalizes it

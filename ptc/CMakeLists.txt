@@ -56,6 +56,13 @@ else()
 endif()
 
 
+# ptc reports its own version as the device's 'version' property
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+  PTC_VERSION_MAJOR=${ANARI_PTC_VERSION_MAJOR}
+  PTC_VERSION_MINOR=${ANARI_PTC_VERSION_MINOR}
+  PTC_VERSION_PATCH=${ANARI_PTC_VERSION_PATCH}
+  PTC_VERSION_STRING="${ANARI_PTC_VERSION}")
+
 include(GenerateExportHeader)
 generate_export_header(${PROJECT_NAME} EXPORT_MACRO_NAME "PTC_EXPORT")
 project_include_directories(PRIVATE ${CMAKE_CURRENT_BINARY_DIR})

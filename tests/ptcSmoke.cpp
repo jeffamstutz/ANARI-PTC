@@ -10,8 +10,9 @@
 // rank also renders a "tie" sphere, the last primitive, at the same place, so
 // that pixel has hits at equal depth from all ranks.
 //
-// Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and the
-// required ANARI 1.1 device properties. Ranks other than the compositing root
+// Every rank also checks that the device reports KHR_DATA_PARALLEL_MPI and
+// KHR_FRAME_COMPLETION_CALLBACK, ptc's own version, and the required ANARI 1.1
+// device properties. Ranks other than the compositing root
 // map the frame too: the contents are undefined there, but it must not crash.
 //
 // Usage: ptcSmoke [--color ufixed8|ufixed8-linear|float32|float32-vec3|none]
@@ -22,6 +23,7 @@
 //                 [--comm <comm>] [--first-comm <comm>]
 //                 [--background none|blend|opaque]
 //                 [--expect-library <path>]
+//                 [--wrapped-library <name>]
 //
 //   --color           frame color channel type (default ufixed8); 'none'
 //                     leaves channel.color unset and checks that mapping
@@ -85,6 +87,11 @@
 //   --expect-library  fail unless the loaded libanari_library_ptc is this
 //                     file (guards against picking up an installed copy
 //                     instead of the one under test)
+//   --wrapped-library set the device parameter 'wrappedLibrary' to this and
+//                     commit the device before anything else; that must
+//                     load it without any warning (the tests set
+//                     PTC_ANARI_LIBRARY to a library that does not exist, so
+//                     the parameter has to win over it)
 //
 // With --resize, --first-color, --first-comm or --unset-all, a first frame is
 // rendered and its color map is checked, then the frame's parameters change and
@@ -172,6 +179,7 @@ struct Options
   std::optional<CommSplit> firstComm;
   Background background{Background::None};
   std::string expectLibrary;
+  std::string wrappedLibrary;
 
   bool twoFrames() const
   {
@@ -210,6 +218,8 @@ int g_colorWarnings = 0;
 int g_colorErrors = 0;
 // Status messages at ERROR or worse
 int g_errors = 0;
+// Status messages at WARNING or worse
+int g_warnings = 0;
 // The last status message at WARNING or worse
 std::string g_lastWarning;
 
@@ -226,6 +236,7 @@ void statusFunc(const void *,
     g_depthWarnings += std::string(msg).find("channel.depth") != std::string::npos;
     g_colorWarnings += std::string(msg).find("channel.color") != std::string::npos;
     g_lastWarning = msg;
+    g_warnings++;
   }
   if (sev <= ANARI_SEVERITY_ERROR) {
     g_colorErrors += std::string(msg).find("channel.color") != std::string::npos;
@@ -296,7 +307,7 @@ bool parseArgs(int argc, char **argv, Options &opts)
     const bool hasValue = i + 1 < argc;
     if ((arg == "--color" || arg == "--first-color" || arg == "--comm"
             || arg == "--first-comm" || arg == "--background"
-            || arg == "--expect-library")
+            || arg == "--expect-library" || arg == "--wrapped-library")
         && !hasValue) {
       fprintf(stderr, "missing value for '%s'\n", arg.c_str());
       return false;
@@ -338,6 +349,8 @@ bool parseArgs(int argc, char **argv, Options &opts)
         return false;
     } else if (arg == "--expect-library")
       opts.expectLibrary = argv[++i];
+    else if (arg == "--wrapped-library")
+      opts.wrappedLibrary = argv[++i];
     else {
       fprintf(stderr, "unknown argument '%s'\n", arg.c_str());
       return false;
@@ -410,6 +423,12 @@ std::string loadedPtcLibrary()
 
 // Spelling used by the SDK's extension lists and anari_extension_utility.h
 const char *const kMpiExtension = "ANARI_KHR_DATA_PARALLEL_MPI";
+// ptc implements this one itself, so it lists it whatever it wraps
+const char *const kCallbackExtension = "ANARI_KHR_FRAME_COMPLETION_CALLBACK";
+
+// ptc's version (from CMake), reported as its device property 'version'
+const int32_t kPtcVersion = PTC_VERSION_MAJOR * 1000 + PTC_VERSION_MINOR * 100
+    + PTC_VERSION_PATCH;
 
 // Count of failed conformance checks, printed with the rank that failed them.
 struct Checker
@@ -426,18 +445,20 @@ struct Checker
   }
 };
 
-// Number of times kMpiExtension occurs in a null-terminated list; duplicates
-// of any entry are reported through `c`.
-int countMpiExtension(Checker &c, const char *const *list, const char *source)
+// Checks that a null-terminated extension list holds each extension ptc
+// implements itself exactly once, and has no duplicates.
+void checkOwnExtensions(Checker &c, const char *const *list, const char *source)
 {
-  int count = 0;
+  int mpi = 0, callback = 0;
   std::set<std::string> seen;
   for (auto e = list; e && *e; e++) {
     c.expect(seen.insert(*e).second,
         std::string(source) + " lists '" + *e + "' twice");
-    count += std::string(*e) == kMpiExtension;
+    mpi += std::string(*e) == kMpiExtension;
+    callback += std::string(*e) == kCallbackExtension;
   }
-  return count;
+  c.expect(mpi == 1, std::string(source) + " lacks " + kMpiExtension);
+  c.expect(callback == 1, std::string(source) + " lacks " + kCallbackExtension);
 }
 
 template <typename T>
@@ -457,12 +478,16 @@ int checkDeviceConformance(anari::Library lib, anari::Device d, int rank)
   const char *const *exts = nullptr;
   c.expect(getDeviceProperty(d, "extension", ANARI_STRING_LIST, exts) && exts,
       "device property 'extension' not reported");
-  c.expect(countMpiExtension(c, exts, "device property 'extension'") == 1,
-      "device property 'extension' lacks " + std::string(kMpiExtension));
+  checkOwnExtensions(c, exts, "device property 'extension'");
 
   int32_t version = -1, major = -1, minor = -1;
-  c.expect(getDeviceProperty(d, "version", ANARI_INT32, version) && version >= 0,
-      "device property 'version' not reported");
+  c.expect(getDeviceProperty(d, "version", ANARI_INT32, version)
+          && version == kPtcVersion,
+      "device property 'version' is not ptc's (got " + std::to_string(version)
+          + ", want " + std::to_string(kPtcVersion) + ")");
+  c.expect(getDeviceProperty(d, "version.major", ANARI_INT32, major)
+          && major == PTC_VERSION_MAJOR,
+      "device property 'version.major' is not ptc's");
   c.expect(getDeviceProperty(d, "anariVersion.major", ANARI_INT32, major)
           && getDeviceProperty(d, "anariVersion.minor", ANARI_INT32, minor)
           && major == 1 && minor >= 1,
@@ -474,8 +499,7 @@ int checkDeviceConformance(anari::Library lib, anari::Device d, int rank)
       "device property 'geometryMaxIndex' not reported");
 
   auto libExts = anariGetDeviceExtensions(lib, "default");
-  c.expect(countMpiExtension(c, libExts, "library extension list") == 1,
-      "library extension list lacks " + std::string(kMpiExtension));
+  checkOwnExtensions(c, libExts, "library extension list");
 
   auto extStruct = anari::extension::getDeviceExtensionStruct(lib, "default");
   c.expect(extStruct.ANARI_KHR_DATA_PARALLEL_MPI,
@@ -1187,6 +1211,18 @@ int main(int argc, char **argv)
     MPI_Abort(MPI_COMM_WORLD, 1);
   }
   auto d = anari::newDevice(lib, "default");
+
+  if (!opts.wrappedLibrary.empty()) {
+    // the wrapped library is loaded when the device is committed
+    const int warningsBefore = g_warnings;
+    anari::setParameter(d, d, "wrappedLibrary", opts.wrappedLibrary.c_str());
+    anari::commitParameters(d, d);
+    Checker c{rank};
+    c.expect(g_warnings == warningsBefore,
+        "loading wrapped library '" + opts.wrappedLibrary
+            + "' from the device parameter reported: " + g_lastWarning);
+    failures += c.failures;
+  }
 
   if (!opts.expectLibrary.empty()) {
     const std::string loaded = loadedPtcLibrary();

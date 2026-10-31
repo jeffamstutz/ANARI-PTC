@@ -20,8 +20,15 @@ namespace ptc {
 // anari_extension_utility.h matches)
 constexpr const char *MPI_EXTENSION_NAME = "ANARI_KHR_DATA_PARALLEL_MPI";
 
-// A wrapped extension list plus KHR_DATA_PARALLEL_MPI, without duplicates.
-// Strings are copied, so the source list may go away afterwards.
+// KHR_FRAME_COMPLETION_CALLBACK, which ptc implements itself instead of
+// forwarding it to the wrapped device
+constexpr const char *FRAME_COMPLETION_CALLBACK_EXTENSION_NAME =
+    "ANARI_KHR_FRAME_COMPLETION_CALLBACK";
+
+// A wrapped extension list plus the extensions ptc implements itself
+// (KHR_DATA_PARALLEL_MPI, KHR_FRAME_COMPLETION_CALLBACK), without duplicates,
+// whatever the wrapped list holds. Strings are copied, so the source list may
+// go away afterwards.
 struct ExtensionList
 {
   explicit ExtensionList(const char *const *wrapped);

@@ -21,6 +21,7 @@
 // std
 #include <memory>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "FrameWrapper.h"
@@ -216,6 +217,11 @@ namespace ptc {
   void initDevice();
 
  private:
+  // The wrapped device, after initDevice(); throws if there is none
+  anari::DeviceImpl &wrapped();
+  // 'f' as a frame of this device; throws if it isn't one
+  FrameWrapper *frameWrapper(ANARIFrame f);
+
   /*! initializes MPI privately unless it is already; if ptc owns MPI, this
       device then keeps it initialized until it is destroyed */
   void acquireMpi();
@@ -242,7 +248,12 @@ namespace ptc {
 
   bool m_initialized{false};
   uint32_t m_refCount{1};
-  anari::DeviceImpl *m_ptd{nullptr};
+  anari::DeviceImpl *m_ptd{nullptr}; // null if initDevice() failed
+  std::string m_initFailure; // why m_ptd is null after initDevice()
+  // committed 'wrappedLibrary' ("": PTC_ANARI_LIBRARY or helide) and
+  // 'wrappedDeviceSubtype', as of the first initDevice()
+  std::string m_wrappedLibraryName;
+  std::string m_wrappedDeviceSubtype{"default"};
   std::vector<FrameWrapper *> m_frameWrappers;
   std::mutex m_extensionsMutex;
   std::unique_ptr<ExtensionList> m_extensions; // built on first query

@@ -14,6 +14,7 @@ ExtensionList::ExtensionList(const char *const *wrapped)
   for (auto e = wrapped; e && *e; e++)
     m_names.emplace_back(*e);
   m_names.emplace_back(MPI_EXTENSION_NAME);
+  m_names.emplace_back(FRAME_COMPLETION_CALLBACK_EXTENSION_NAME);
   std::sort(m_names.begin(), m_names.end());
   m_names.erase(std::unique(m_names.begin(), m_names.end()), m_names.end());
 
