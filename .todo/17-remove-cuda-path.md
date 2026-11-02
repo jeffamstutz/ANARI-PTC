@@ -8,11 +8,11 @@
 
 **Status:** ready-for-agent
 
-- [ ] **Timing gate, before deleting anything.**
+- [ ] **Timing baseline, before deleting anything.**
   - On the current tree, time compositing on the CUDA build (`~/build/claude/anari-ptc`) and the CPU build (`~/build/claude/anari-ptc_cpu`).
   - Use 3840x2160 with `FLOAT32_VEC4` and `UFIXED8_RGBA_SRGB` color plus depth, on 2 and 4 ranks. Report the median of at least 20 frames after warm-up, both for compositing alone and for the whole `anariRenderFrame`.
   - Record the numbers in this ticket's resolution.
-  - If CPU compositing is more than 2x slower than CUDA for the whole `anariRenderFrame` in any configuration, stop. Write a blocking follow-up with the numbers instead of deleting.
+  - The numbers are informational only: removal proceeds whatever they show (decided 2026-11-02, see 15).
 - [ ] Remove `ptc/CUDAFrameWrapper.*`, `ext/deepCompositing/` (including `samples/`), `tests/cudaDevice.*`, the `onegpu` tests, and the CUDA logic in both `CMakeLists.txt` files (`PTC_DISABLE_CUDA`, `USE_CUDA`, the CUDA arch selection, `find_package(CUDAToolkit)`, `CUDA::cuda_driver`, `PTC_CUDA`).
 - [ ] Simplify `FrameWrapper`/`CPUFrameWrapper` where an interface exists only to serve two backends. Folding `CPUFrameWrapper` into `FrameWrapper` is in scope if it makes the code simpler. Keep behavior and the test suite otherwise unchanged.
 - [ ] `cmake_minimum_required` matches what the build actually needs (followups/13 item 2).

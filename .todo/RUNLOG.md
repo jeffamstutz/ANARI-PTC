@@ -13,3 +13,4 @@
 - 12 wrapped-device-selection — needs-user (non-blocking) — 9debfc4 46fae0a — followups/12-selection-precedence-and-policy.md
 - 13 cuda-compositor-hygiene — needs-user (non-blocking) — 29a3d0d 256ea7d — followups/13-gpu-selection-policy-and-driver-dep.md
 - 14 diagnostics-via-status-callback — needs-user (non-blocking) — 033ce84 d933f5e — followups/14-color-rejection-semantics-and-diagnostics-policy.md
+- 15 upstream-scope-decisions — decided by user 2026-11-02 (Khronos headers only; CPU-only unconditional; TBB required; keep ptc) — no code commits

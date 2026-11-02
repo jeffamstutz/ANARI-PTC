@@ -1,6 +1,6 @@
 # 16: Port into ANARI-SDK
 
-**What to build:** The ptc device lives in ANARI-SDK under its devices directory and builds behind a `BUILD_PTC_DEVICE` option (default OFF) that finds MPI and optionally CUDA, per the decisions in 15. The code follows SDK conventions: clang-format, the agreed headers, C++17, the SDK's namespace and CMake helper idioms. The MPI tests run under the SDK's ctest. A device README explains:
+**What to build:** The ptc device lives in ANARI-SDK under its devices directory and builds behind a `BUILD_PTC_DEVICE` option (default OFF) that finds MPI and oneTBB >= 2021.6 (required), per the decisions in 15. It keeps the name `ptc`, and every file carries the Khronos SDK header only. The code follows SDK conventions: clang-format, the agreed headers, C++17, the SDK's namespace and CMake helper idioms. The MPI tests run under the SDK's ctest. A device README explains:
 - usage and wrapped-device selection
 - the `mpiCommunicator` convention
 - compositing semantics: fragments sorted by depth, then premultiplied "over" with composited alpha, matching helide and VisRTX (see followups/08)
