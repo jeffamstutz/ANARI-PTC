@@ -58,7 +58,7 @@ float recordDepth(const uint32_t *record)
 }
 
 /*! MPI_Op: keeps the nearer of each pair of records, the lower rank's at
-    equal depth (as the compositors order equal-depth fragments), which
+    equal depth (as the compositor orders equal-depth fragments), which
     makes it commutative */
 void nearestRecord(void *in, void *inout, int *len, MPI_Datatype *type)
 {
@@ -75,7 +75,8 @@ void nearestRecord(void *in, void *inout, int *len, MPI_Datatype *type)
   }
 }
 
-/*! the compositor's color format for a compositable color type */
+/*! the compositor's color format for a compositable color type; RGBA8
+    without one (ANARI_UNKNOWN) */
 CPUCompositor::ColorFormat colorFormat(ANARIDataType colorType)
 {
   if (colorType == ANARI_FLOAT32_VEC4)
@@ -128,12 +129,13 @@ FrameWrapper::FrameWrapper(ANARIDevice ptcDevice,
 
 FrameWrapper::~FrameWrapper()
 {
+  // first, as before the wrapped device is released, and before the
+  // communicator it composites over is freed
+  m_compositor.reset();
   anariRelease(m_device, m_frame);
   anariRelease(m_device, m_device);
   if (m_color) free(m_color);
   if (m_depth) free(m_depth);
-  // before the communicator it composites over
-  m_compositor.reset();
   int finalized = 0;
   MPI_Finalized(&finalized);
   if (m_comm != MPI_COMM_NULL && !finalized)
@@ -641,8 +643,9 @@ void FrameWrapper::renderFrame()
     const bool allOk = agree(m_comm, !failure);
     try {
       if (allOk) {
-        // the compositor reads the wrapped frame's channels in place;
-        // without channel.color, transparent black, so depth composites
+        // reads the wrapped frame's channels in place; without
+        // channel.color it composites transparent black, so depth still
+        // composites
         m_compositor->run(
             m_color, m_depth, color ? color : m_noColor.data(), depth);
         compositeIds();
