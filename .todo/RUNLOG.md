@@ -14,3 +14,4 @@
 - 13 cuda-compositor-hygiene — needs-user (non-blocking) — 29a3d0d 256ea7d — followups/13-gpu-selection-policy-and-driver-dep.md
 - 14 diagnostics-via-status-callback — needs-user (non-blocking) — 033ce84 d933f5e — followups/14-color-rejection-semantics-and-diagnostics-policy.md
 - 15 upstream-scope-decisions — decided by user 2026-11-02 (Khronos headers only; CPU-only unconditional; TBB required; keep ptc) — no code commits
+- 17 remove-cuda-path — needs-user (non-blocking) — 07b74c8 5e9e81d — followups/17-ci-matrix-and-loose-ends.md
