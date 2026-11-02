@@ -15,3 +15,5 @@
   - **Decided 2026-11-02:** keep TBB as a required dependency; accept the oneTBB >= 2021.6 floor and the best-effort `tbb::finalize` workaround.
 - [x] Device/library name: keep `ptc`, or rename
   - **Decided 2026-11-02:** keep `ptc` (`anari_library_ptc`).
+
+**2026-11-02:** Ingo approved the migration into ANARI-SDK and the license/header change.
