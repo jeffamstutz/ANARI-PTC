@@ -23,11 +23,6 @@
 #include <cstring>
 #include <memory>
 #include <stdexcept>
-#if PTC_CUDA
-#include "CUDAFrameWrapper.h"
-#else
-#include "CPUFrameWrapper.h"
-#endif
 #include "WrappedLibrary.h"
 
 namespace ptc {
@@ -101,14 +96,9 @@ ANARICamera PTCDevice::newCamera(const char *subtype)
 
 ANARIFrame PTCDevice::newFrame()
 {
-#if PTC_CUDA
-  typedef CUDAFrameWrapper FrameWrapperT;
-#else
-  typedef CPUFrameWrapper FrameWrapperT;
-#endif
   return guarded("anariNewFrame", ANARIFrame(nullptr), [&] {
     auto &w = wrapped();
-    auto *fw = new FrameWrapperT(this_device(),
+    auto *fw = new FrameWrapper(this_device(),
         (ANARIDevice)&w,
         w.newFrame(),
         [=](const void *f) { this->removeFrameWrapper((FrameWrapper *)f); },

@@ -75,6 +75,16 @@ void nearestRecord(void *in, void *inout, int *len, MPI_Datatype *type)
   }
 }
 
+/*! the compositor's color format for a compositable color type */
+CPUCompositor::ColorFormat colorFormat(ANARIDataType colorType)
+{
+  if (colorType == ANARI_FLOAT32_VEC4)
+    return CPUCompositor::ColorFormat::RGBA32F;
+  if (colorType == ANARI_UFIXED8_RGBA_SRGB)
+    return CPUCompositor::ColorFormat::RGBA8_SRGB;
+  return CPUCompositor::ColorFormat::RGBA8;
+}
+
 /*! 'type', and the type it names if it is ANARI_DATA_TYPE, for messages */
 std::string describeType(ANARIDataType type, const void *mem)
 {
@@ -122,7 +132,8 @@ FrameWrapper::~FrameWrapper()
   anariRelease(m_device, m_device);
   if (m_color) free(m_color);
   if (m_depth) free(m_depth);
-  // the subclass has destroyed its compositor by now
+  // before the communicator it composites over
+  m_compositor.reset();
   int finalized = 0;
   MPI_Finalized(&finalized);
   if (m_comm != MPI_COMM_NULL && !finalized)
@@ -383,8 +394,7 @@ void FrameWrapper::setCommunicator(MPI_Comm comm)
       return;
     // every rank of the old communicator commits a new one in lockstep, so
     // they all get here and free it together
-    cleanup();
-    destroyCompositor();
+    m_compositor.reset();
     MPI_Comm_free(&m_comm);
     m_rank = -1;
     // the buffers stay mappable until the next render reallocates them
@@ -397,14 +407,20 @@ void FrameWrapper::setCommunicator(MPI_Comm comm)
   MPI_Comm_dup(comm, &dup);
   std::exception_ptr failure;
   try {
-    createCompositor(dup);
+    m_compositor = std::make_unique<CPUCompositor>(dup);
+    int rank = 0, size = 0;
+    MPI_Comm_rank(dup, &rank);
+    MPI_Comm_size(dup, &size);
+    reportStatus(ANARI_SEVERITY_DEBUG,
+        "CPU compositor on rank " + std::to_string(rank) + " of "
+            + std::to_string(size));
   } catch (...) {
     failure = std::current_exception();
   }
   // If some ranks have no compositor, none may use this communicator: the
   // others would wait for them in every render.
   if (!agree(dup, !failure)) {
-    destroyCompositor();
+    m_compositor.reset();
     MPI_Comm_free(&dup);
     if (failure)
       std::rethrow_exception(failure);
@@ -555,7 +571,9 @@ void FrameWrapper::updateBuffers()
   m_color = malloc(numPixels * colorPixelSize(colorType));
   m_depth = (float *)malloc(numPixels * sizeof(float));
   try {
-    allocate();
+    m_compositor->resize(size.x, size.y, colorFormat(colorType));
+    if (colorType == ANARI_UNKNOWN)
+      m_noColor.assign(numPixels, 0u);
   } catch (...) {
     // don't leave buffers that look ready to composite into
     freeBuffers();
@@ -565,7 +583,7 @@ void FrameWrapper::updateBuffers()
 
 void FrameWrapper::freeBuffers()
 {
-  cleanup();
+  m_noColor = {};
   free(m_color);
   free(m_depth);
   m_color = nullptr;
@@ -589,7 +607,7 @@ void FrameWrapper::renderFrame()
       m_comm != MPI_COMM_NULL && size.x != 0 && size.y != 0;
 
   // Everything up to compositing is local to this rank, and may fail on it
-  // alone (an unsupported color type, out of memory, a CUDA error).
+  // alone (an unsupported color type, out of memory).
   std::exception_ptr failure;
   const void *color = nullptr;
   const float *depth = nullptr;
@@ -603,7 +621,6 @@ void FrameWrapper::renderFrame()
       depth = (const float *)mapWrapped("channel.depth", ANARI_FLOAT32);
       if (m_bufferColorType != ANARI_UNKNOWN)
         color = mapWrapped("channel.color", m_bufferColorType);
-      stage(color, depth);
       stageIds(depth);
     }
   } catch (...) {
@@ -624,7 +641,10 @@ void FrameWrapper::renderFrame()
     const bool allOk = agree(m_comm, !failure);
     try {
       if (allOk) {
-        composite();
+        // the compositor reads the wrapped frame's channels in place;
+        // without channel.color, transparent black, so depth composites
+        m_compositor->run(
+            m_color, m_depth, color ? color : m_noColor.data(), depth);
         compositeIds();
       }
     } catch (...) {

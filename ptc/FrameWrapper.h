@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "CPUCompositor.h"
 // anari
 #include <anari/anari.h>
 #include <anari/anari_cpp/ext/linalg.h>
@@ -29,6 +30,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -75,7 +77,7 @@ namespace ptc {
                  ANARIFrame f,
                  FrameWrapperNotificationHandler onObjectDestroy,
                  FrameWrapperStatusHandler reportStatus);
-    virtual ~FrameWrapper() override;
+    ~FrameWrapper() override;
 
     ANARIFrame handle() const;
 
@@ -128,7 +130,7 @@ namespace ptc {
         completeFrame() then */
     void refuseFromCallback(const char *what) const;
 
-  protected:
+  private:
     // The frame parameters ptc tracks, with the defaults the wrapped frame
     // uses when they are unset or set with the wrong type.
     struct TrackedParameters
@@ -148,30 +150,17 @@ namespace ptc {
       const void *completionCallbackUserData{nullptr};
     };
 
-    /*! (re)allocates the buffers if the committed size or color type
-        differs from what they were allocated for */
+    /*! (re)allocates the buffers and resizes the compositor if the
+        committed size or color type differs from what they were allocated
+        for. Not collective: renderFrame() has the ranks agree afterwards. */
     void updateBuffers();
     /*! frees all buffers; afterwards they are empty, for no color type */
     void freeBuffers();
-    /*! allocates the subclass's resources for m_bufferSize and
-        m_bufferColorType; only called with a non-empty size. Not
-        collective: renderFrame() has the ranks agree afterwards. */
-    virtual void allocate() = 0;
-    /*! the local half of compositing: everything that may fail on this
-        rank alone (e.g. uploading to the GPU) happens here, before the ranks
-        agree to composite. 'color' (null without a color type) and 'depth'
-        are the wrapped frame's channels, mapped until composite() returns.
-        Not collective; only called with a non-empty size. */
-    virtual void stage(const void *color, const float *depth) = 0;
-    /*! the collective half: composites what stage() staged into m_color
-        and m_depth; collective over m_comm */
-    virtual void composite() = 0;
     /*! the local half of compositeIds(): gathers this rank's record of
         each pixel's depth, rank and enabled ID_CHANNELS into m_idRecords */
     void stageIds(const float *depth);
-    /*! composites the enabled ID_CHANNELS into m_ids, on the host and for
-        either compositor: one reduction over m_comm keeps each pixel's
-        nearest record; collective over m_comm */
+    /*! composites the enabled ID_CHANNELS into m_ids: one reduction over
+        m_comm keeps each pixel's nearest record; collective over m_comm */
     void compositeIds();
     /*! whether 'ok' is true on every rank of 'comm'; collective over
         'comm'. Ranks call it before a collective step that may have failed
@@ -181,14 +170,6 @@ namespace ptc {
     /*! maps a channel of the wrapped frame; throws unless it is 'type' and
         m_bufferSize */
     const void *mapWrapped(const char *channel, ANARIDataType type);
-    /*! frees what allocate() allocated */
-    virtual void cleanup() = 0;
-    /*! creates the compositor, over 'comm' (owned by this FrameWrapper);
-        collective over 'comm' */
-    virtual void createCompositor(MPI_Comm comm) = 0;
-    /*! destroys the compositor createCompositor() created, after cleanup() */
-    virtual void destroyCompositor() = 0;
-
     /*! makes the compositor composite over 'comm' (a copy of it), if it
         doesn't already composite over the same ranks; collective over
         'comm' and over the communicator it replaces. MPI_COMM_NULL only
@@ -236,6 +217,9 @@ namespace ptc {
     // whether mpiCommunicator was set or unset since the last commit (true
     // at first, so the first commit creates the compositor)
     bool m_pendingCommChanged{true};
+    // composites color and depth over m_comm; null while m_comm is
+    // MPI_COMM_NULL
+    std::unique_ptr<CPUCompositor> m_compositor;
     // The compositor's communicator: our MPI_Comm_dup of the committed one
     // (so the app may free its own), MPI_COMM_NULL before the first commit.
     MPI_Comm m_comm{MPI_COMM_NULL};
@@ -270,12 +254,11 @@ namespace ptc {
     std::vector<size_t> m_idChannels;
     std::vector<uint32_t> m_idRecords;
 
+    // composited color and depth (rank 0); empty without a non-empty size
     float *m_depth = nullptr;
     void  *m_color = nullptr;
-    
-    uint32_t *d_color_in{nullptr};
-    uint32_t *d_color_out{nullptr};
-    float *d_depth{nullptr};
+    // compositor color input when the frame has no channel.color
+    std::vector<uint32_t> m_noColor;
   };
 
 
@@ -289,7 +272,7 @@ namespace ptc {
                                            : sizeof(uint32_t);
   }
 
-  /*! whether both compositors handle this color type; ANARI_UNKNOWN (no
+  /*! whether the compositor handles this color type; ANARI_UNKNOWN (no
       color) counts, the compositor then runs on transparent black */
   inline bool isCompositableColorType(ANARIDataType colorType)
   {

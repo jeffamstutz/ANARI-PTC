@@ -16,48 +16,20 @@
 
 ## PTC device target ##
 
-if (USE_CUDA)
-  project(anari_library_ptc LANGUAGES C CXX CUDA)
-else()
-  project(anari_library_ptc LANGUAGES C CXX)
-endif()
+project(anari_library_ptc LANGUAGES C CXX)
 
-if (USE_CUDA)
-  project_add_library(MODULE
-    MpiExtension.cpp
-    PTCDevice.cpp
-    PTCLibrary.cpp
-    WrappedLibrary.cpp
-    FrameWrapper.cpp
-    CUDAFrameWrapper.cu)
-  set_source_files_properties(CUDAFrameWrapper.cu
-    PROPERTIES COMPILE_FLAGS "--expt-relaxed-constexpr"
-    )
-  # the driver API saves and restores the app's current CUDA context
-  find_package(CUDAToolkit REQUIRED)
-  project_link_libraries(
-    deepCompositing
-    CUDA::cuda_driver
-    anari::helium
-    anari::anari
-  )
-  project_compile_definitions(PRIVATE -DPTC_CUDA=1)
-else()
-  project_add_library(MODULE
-    MpiExtension.cpp
-    PTCDevice.cpp
-    PTCLibrary.cpp
-    WrappedLibrary.cpp
-    FrameWrapper.cpp
-    CPUFrameWrapper.cpp
-  )
-  project_link_libraries(
-    cpu_compositing
-    anari::helium
-    anari::anari
-  )
-endif()
-
+project_add_library(MODULE
+  MpiExtension.cpp
+  PTCDevice.cpp
+  PTCLibrary.cpp
+  WrappedLibrary.cpp
+  FrameWrapper.cpp
+)
+project_link_libraries(
+  cpu_compositing
+  anari::helium
+  anari::anari
+)
 
 # ptc reports its own version as the device's 'version' property
 target_compile_definitions(${PROJECT_NAME} PRIVATE

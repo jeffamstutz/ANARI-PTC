@@ -22,22 +22,18 @@ This project requires
   (https://github.com/KhronosGroup/ANARI-SDK)
 - cmake, c compiler, etc (which you already need for the ANARI SDK,
   anyway)
-- when buiding the *optional* (GPU-compositing version): `CUDA` (if CUDA
-  is disabled or cannot be found the project will automatically fall
-  back to CPU compositing)
-- when building the CPU version: `tbb`
-- MPI development packages. When built with CUDA support you'll need a
-  CUDA-aware MPI build; for the cpu-only version any MPI build should
-  do.
+- oneTBB 2021.6 or newer
+- MPI development packages (any MPI build will do)
+
+Compositing runs on the CPU only: ptc composites the wrapped frame's
+channels in host memory, whichever device it wraps.
 
 # Building 
 
 - Make sure to build and install the ANARI_SDK
 - `mkdir buildDir`
 - `cd buildDir`
-- `cmake ..` (for default build)
-or
-- `cmake -DPTC_DISABLE_CUDA .. (for explicitly cpu-only build
+- `cmake ..`
 
 # Testing
 
@@ -142,18 +138,11 @@ free its communicator after the commit.
   of the others hanging. Committing a communicator agrees the same way on
   whether every rank created its compositor. A failure *inside* the
   compositor's communication can still leave the other ranks waiting.
-- With CUDA, a frame's first communicator picks the GPU it composites on:
-  its rank among that communicator's ranks on the same node, modulo the
-  number of visible GPUs. Later communicators keep that GPU. ptc makes it
-  current only around its own CUDA work and then restores the calling
-  thread's current CUDA context, so the app and the wrapped device never
-  see it change.
 
 ## Diagnostics
 
 ptc prints nothing: everything it has to say goes through the ANARI status
-callback. (The vendored CUDA compositor has opt-in debug output on stdout,
-built with `-DDC_VERBOSE=1`.)
+callback.
 
 - A frame parameter ptc tracks (`size`, `channel.color`, `channel.depth`,
   the id channels, `mpiCommunicator`, `frameCompletionCallback` and its

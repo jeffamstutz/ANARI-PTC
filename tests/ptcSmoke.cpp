@@ -115,11 +115,6 @@
 // disabled between frames too.
 // Without --unset-all, parameters that go away are unset one by one.
 //
-// Built against the CUDA ptc (PTC_TEST_CUDA), every rank first makes a GPU
-// current that differs from the one ptc picks for it, when there is more
-// than one, and checks that ptc leaves it current: after creating, committing
-// and rendering the frame, and from inside the frame completion callback.
-//
 // Every rank exits non-zero if any rank recorded a failure.
 
 // anariGetDeviceExtensionStruct() is implemented in this translation unit
@@ -128,9 +123,6 @@
 #include <anari/anari_cpp.hpp>
 #include <anari/anari_cpp/ext/linalg.h>
 #include <mpi.h>
-#ifdef PTC_TEST_CUDA
-#include "cudaDevice.h"
-#endif
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -743,59 +735,10 @@ struct CallbackContext
 
 CallbackContext g_callback;
 
-// The app's current CUDA device (PTC_TEST_CUDA) /////////////////////////////
-
-// The GPU this rank makes current before loading ptc; -1 without CUDA
-int g_appCudaDevice = -1;
-int g_cudaDeviceFailures = 0;
-
-// Makes a GPU current that ptc does not pick for this rank, where it can:
-// ptc picks a rank's GPU by its rank among the ranks on the node, and with
-// all ranks on one node and MPI_COMM_WORLD this picks the next GPU. With one
-// GPU, or after a split, the two may coincide and the check cannot fail.
-void selectAppCudaDevice(int rank)
-{
-#ifdef PTC_TEST_CUDA
-  Checker c{rank};
-  const int count = cudaDeviceCount();
-  c.expect(count > 0, "no CUDA device");
-  if (count > 0) {
-    const int device = (rank + 1) % count;
-    const bool ok = makeCudaDeviceCurrent(device);
-    c.expect(ok, "cannot make GPU " + std::to_string(device) + " current");
-    if (ok)
-      g_appCudaDevice = device;
-  }
-  g_cudaDeviceFailures += c.failures;
-#else
-  (void)rank;
-#endif
-}
-
-// ptc must not change the calling thread's current CUDA device.
-void checkCudaDevice(const char *when)
-{
-#ifdef PTC_TEST_CUDA
-  if (g_appCudaDevice < 0)
-    return;
-  int rank = 0;
-  MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  Checker c{rank};
-  const int current = currentCudaDevice();
-  c.expect(current == g_appCudaDevice,
-      "current CUDA device is " + std::to_string(current) + " " + when
-          + ", the app made " + std::to_string(g_appCudaDevice) + " current");
-  g_cudaDeviceFailures += c.failures;
-#else
-  (void)when;
-#endif
-}
-
 void renderAndWait(anari::Device d, anari::Frame frame)
 {
   anari::render(d, frame);
   anari::wait(d, frame);
-  checkCudaDevice("after rendering the frame");
 }
 
 // What mpiCommunicator points to. ptc may only read it until the frame's
@@ -812,7 +755,6 @@ void commitFrame(anari::Device d, anari::Frame frame)
 {
   anari::commitParameters(d, frame);
   g_commParameter = MPI_COMM_NULL;
-  checkCudaDevice("after committing the frame");
 }
 
 // Set every parameter of `state` (and the scene objects) on the frame.
@@ -987,8 +929,8 @@ int checkColor(
 
 // Rank 0 of the layout only, with --background: the corner pixel, a miss on
 // every rank, is the ranks' backgrounds blended in linear space. 8-bit
-// results may be off by 1 LSB from rounding; float ones by about as much,
-// since the CUDA compositor carries fragments in 8 bits.
+// results may be off by 1 LSB from rounding; float ones are held to the same
+// 1/255.
 int checkBackground(
     anari::Device d, anari::Frame frame, const Options &opts, const Layout &l)
 {
@@ -1283,7 +1225,6 @@ void onFrameComplete(const void *userData, ANARIDevice d, ANARIFrame f)
     return;
   }
   ctx.depth++;
-  checkCudaDevice("inside the frame completion callback");
   if (ctx.finalFrame && ctx.rendering && ctx.renderFails) {
     c.expect(g_errors > ctx.errorsBeforeRender,
         "frame completion callback called before the render's ERROR was "
@@ -1440,8 +1381,6 @@ int main(int argc, char **argv)
   if (opts.failLastRank && rank == size - 1)
     opts.colorType = ANARI_FLOAT32_VEC3;
 
-  selectAppCudaDevice(rank);
-
   auto lib = anari::loadLibrary("ptc", statusFunc);
   if (!lib) {
     printf("FAIL: rank %d could not load the ptc library\n", rank);
@@ -1497,7 +1436,6 @@ int main(int argc, char **argv)
       opts.callback,
       &finalLayout};
   auto frame = anari::newObject<anari::Frame>(d);
-  checkCudaDevice("after creating the frame");
   g_callback = {d, frame, rank, &finalLayout, &opts};
   int renders = 0;
   // the last rank's, with --fail-last-rank
@@ -1602,10 +1540,6 @@ int main(int argc, char **argv)
     failures += checkCallbackCalls(d, frame, rank, renders);
 
   anari::release(d, frame);
-  checkCudaDevice("after releasing the frame");
-  failures += g_cudaDeviceFailures;
-  if (g_appCudaDevice >= 0 && !g_cudaDeviceFailures)
-    printf("PASS: rank %d: GPU %d stayed current\n", rank, g_appCudaDevice);
   releaseScene(d, scene);
   anari::release(d, d);
   anari::unloadLibrary(lib);
