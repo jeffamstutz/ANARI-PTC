@@ -15,3 +15,4 @@
 - 14 diagnostics-via-status-callback — needs-user (non-blocking) — 033ce84 d933f5e — followups/14-color-rejection-semantics-and-diagnostics-policy.md
 - 15 upstream-scope-decisions — decided by user 2026-11-02 (Khronos headers only; CPU-only unconditional; TBB required; keep ptc) — no code commits
 - 17 remove-cuda-path — needs-user (non-blocking) — 07b74c8 5e9e81d — followups/17-ci-matrix-and-loose-ends.md
+- 16 port-into-anari-sdk — needs-user (BLOCKING: CI for ptc in ANARI-SDK) — ANARI-SDK feature/ptc-device 3493ab3 0020661; anari-ptc 0f48b8b — followups/16-pr-ci-and-version.md — not landed, run halted
