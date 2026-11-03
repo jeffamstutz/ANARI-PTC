@@ -11,13 +11,46 @@
 
 **Blocked by:** 15 (Upstream scope decisions), 03 (Device reports KHR_DATA_PARALLEL_MPI), 04 (Composited depth channel), 05 (Frame parameter tracking), 06 (Frame completion callback), 07 (Honor mpiCommunicator), 17 (Remove the CUDA compositing path)
 
-**Status:** ready-for-agent
+**Status:** done (implemented 2026-11-02, awaiting maintainer review)
 
-- [ ] Device builds in the SDK tree with `BUILD_PTC_DEVICE=ON`, and the SDK is unaffected with it OFF
-- [ ] Dependencies match decisions in 15
-- [ ] Sources pass the SDK's clang-format
-- [ ] MPI tests registered in SDK ctest and passing locally. The harness currently finds helide only via `anari_DIR/../../..` and sets `LD_LIBRARY_PATH` itself; rewire both for the in-tree SDK build (followups/02 item 2)
-- [ ] Device README added; root AGENTS.md device list mentions ptc
-- [ ] Ready to open a PR against `next_release`
+- [x] Device builds in the SDK tree with `BUILD_PTC_DEVICE=ON`, and the SDK is unaffected with it OFF
+- [x] Dependencies match decisions in 15
+- [x] Sources pass the SDK's clang-format
+- [x] MPI tests registered in SDK ctest and passing locally. The harness currently finds helide only via `anari_DIR/../../..` and sets `LD_LIBRARY_PATH` itself; rewire both for the in-tree SDK build (followups/02 item 2)
+- [x] Device README added; root AGENTS.md device list mentions ptc
+- [x] Ready to open a PR against `next_release`
 
 Note: MPI counts in the CPU compositor are `int`. With float32 color they overflow at about 536M pixels per exchange. Decide whether to widen them or document the limit (followups/08 item 5).
+
+## Resolution (2026-11-02)
+
+ANARI-SDK branch `feature/ptc-device` (from `origin/next_release` 467eaab),
+commits 3493ab3 and 0020661; not pushed, no PR opened.
+
+- `src/devices/ptc/`: the device (the CPU compositor folded into the module
+  target), `tests/` and `README.md`. `BUILD_PTC_DEVICE` (default OFF) in
+  `src/devices/CMakeLists.txt` finds MPI and oneTBB >= 2021.6 (required).
+  Khronos header only on every file; sources pass the SDK's clang-format.
+  Library name `anari_library_ptc`, namespace `ptc`; it still reports its own
+  version 1.1.0. Root `README.md` and `AGENTS.md` list it; the external
+  ANARI-PTC link in the README's implementation list is replaced by the
+  in-tree entry.
+- Tests follow `BUILD_TESTING`, find helide as the in-tree
+  `anari_library_helide` target (skipped with a warning without it or without
+  mpiexec), and prepend `$<TARGET_FILE_DIR>` of ptc and helide to
+  `LD_LIBRARY_PATH`. 139/139 `ptc_*` pass in `~/build/claude/ANARI-SDK`;
+  the SDK configures and builds with `BUILD_PTC_DEVICE=OFF`.
+- Code review: port is behaviour-identical to b7962ee apart from headers,
+  formatting, ticket numbers in comments and build wiring. README fixes from
+  review are in 0020661.
+
+Left to the maintainer (conservative choice taken):
+- MPI `int` counts: documented as a frame-size limit in the README, not
+  widened.
+- Float32 blend test tolerance (1/255): unchanged (followups/17 item 2).
+- Shared color-type table (followups/17 item 3): not done.
+- ptc's own GitHub CI (followups/17 item 1): untouched; the SDK CI does not
+  build `BUILD_PTC_DEVICE`.
+- Version: ptc keeps its own 1.1.0 rather than the SDK version (halcyon
+  reports the SDK version).
+- Tests set `LD_LIBRARY_PATH` only, so they are Linux-only as before.
