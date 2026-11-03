@@ -16,3 +16,4 @@
 - 15 upstream-scope-decisions — decided by user 2026-11-02 (Khronos headers only; CPU-only unconditional; TBB required; keep ptc) — no code commits
 - 17 remove-cuda-path — needs-user (non-blocking) — 07b74c8 5e9e81d — followups/17-ci-matrix-and-loose-ends.md
 - 16 port-into-anari-sdk — needs-user (BLOCKING: CI for ptc in ANARI-SDK) — ANARI-SDK feature/ptc-device 3493ab3 0020661; anari-ptc 0f48b8b — followups/16-pr-ci-and-version.md — not landed, run halted
+- 16 port-into-anari-sdk — landed after user chose CI option (ptc on ubuntu-24.04 rows) — ANARI-SDK feature/ptc-device 3493ab3 0020661 6af4013, PR KhronosGroup/ANARI-SDK#394; anari-ptc 0f48b8b — followups/16-pr-ci-and-version.md

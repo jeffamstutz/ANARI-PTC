@@ -34,7 +34,7 @@ implementer made alone that the PR would ship as they are.
 
 ## 1. Should the PR add a CI job for ptc?
 
-severity: blocking
+severity: non-blocking (resolved 2026-11-03: user chose to enable ptc in an existing Linux job; ANARI-SDK 6af4013 builds and tests ptc on the ubuntu-24.04 rows of build-linux)
 
 The SDK's `anari_sdk_ci.yml` does not set `BUILD_PTC_DEVICE`. So the PR
 adds a device that no CI builds or tests, and the 139 tests only ever run
